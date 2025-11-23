@@ -1,0 +1,4 @@
+D:/Escritorio/School/UV/7mo_sem/Softwarre/Proyecto/Prueba1/_build/Prueba1/default/CMakeFiles/Prueba1_default_default_XC8_compile.dir
+D:/Escritorio/School/UV/7mo_sem/Softwarre/Proyecto/Prueba1/_build/Prueba1/default/CMakeFiles/Prueba1_default_image_J6cH4u9v.dir
+D:/Escritorio/School/UV/7mo_sem/Softwarre/Proyecto/Prueba1/_build/Prueba1/default/CMakeFiles/edit_cache.dir
+D:/Escritorio/School/UV/7mo_sem/Softwarre/Proyecto/Prueba1/_build/Prueba1/default/CMakeFiles/rebuild_cache.dir
