@@ -1,8 +1,0 @@
-[
-{
-  "directory": "D:/Escritorio/School/UV/7mo_sem/Softwarre/Proyecto/Prueba1/_build/Prueba1/default",
-  "command": "c:\\PROGRA~1\\MICROC~1\\xc8\\v3.10\\bin\\xc8-cc.exe -DXPRJ_default=default -D__16F877A__ -D__DEBUG=1 -c -mcpu=16F877A -mdfp=C:/Users/cocos/.mchp_packs/Microchip/PIC16Fxxx_DFP/1.7.162/xc8 -fno-short-double -fno-short-float -O0 -maddrqual=ignore -mwarn=-3 -msummary=-psect,-class,+mem,-hex,-file -ginhx32 -Wl,--data-init -mno-keep-startup -mno-osccal -mno-resetbits -mno-save-resetbits -mno-download -mno-stackcall -mno-default-config-bits -std=c99 -gdwarf-3 -mstack=compiled:auto:auto -o CMakeFiles\\Prueba1_default_default_XC8_compile.dir\\D_\\Escritorio\\School\\UV\\7mo_sem\\Softwarre\\Proyecto\\Prueba1\\main.c.p1 -c D:\\Escritorio\\School\\UV\\7mo_sem\\Softwarre\\Proyecto\\Prueba1\\main.c",
-  "file": "D:/Escritorio/School/UV/7mo_sem/Softwarre/Proyecto/Prueba1/main.c",
-  "output": "D:/Escritorio/School/UV/7mo_sem/Softwarre/Proyecto/Prueba1/_build/Prueba1/default/CMakeFiles/Prueba1_default_default_XC8_compile.dir/D_/Escritorio/School/UV/7mo_sem/Softwarre/Proyecto/Prueba1/main.c.p1"
-}
-]
