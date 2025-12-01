@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 from flask import Flask
 from flask_cors import CORS
 from config import Config
@@ -12,19 +11,6 @@ def create_app():
     return app
 
 app = create_app()
-=======
-from flask import Flask
-from flask_cors import CORS
-from config import Config
-from routes.api import api_bp
 
-def create_app():
-    app = Flask(__name__)
-    app.config.from_object(Config)
-    CORS(app)
-    app.register_blueprint(api_bp, url_prefix='/api')
-    return app
-
-app = create_app()
->>>>>>> 234a90a8e71a7fdf874efb224fa92217ccda0f3c
-app.run(debug=True, port=5000)
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
