@@ -1,4 +1,10 @@
+<<<<<<< HEAD
 Flask==3.0.0
 Flask-CORS==4.0.0
 pyserial==3.5
+=======
+Flask==3.0.0
+Flask-CORS==4.0.0
+pyserial==3.5
+>>>>>>> 234a90a8e71a7fdf874efb224fa92217ccda0f3c
 python-dotenv==1.0.0
