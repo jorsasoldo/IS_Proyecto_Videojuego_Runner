@@ -2,28 +2,34 @@
   <div class="sprite-editor">
     <h3>{{ title }}</h3>
     
-    <!-- Matriz 5x8 -->
-    <div class="grid-container">
-      <div class="grid" :style="gridStyle">
-        <div
-          v-for="rowIndex in 8"
-          :key="`row-${rowIndex-1}`"
-          class="grid-row"
-        >
+    <div class="editor-layout">
+      <!-- Matriz 5x8 -->
+      <div class="grid-container">
+        <div class="grid" :style="gridStyle">
           <div
-            v-for="colIndex in 5"
-            :key="`cell-${rowIndex-1}-${colIndex-1}`"
-            class="grid-cell"
-            :class="{ active: matrix[rowIndex-1][colIndex-1] }"
-            @mousedown.prevent="handleMouseDown(rowIndex-1, colIndex-1)"
-            @mouseenter="dragCell(rowIndex-1, colIndex-1)"
-            @mouseup="handleMouseUp"
-          ></div>
+            v-for="rowIndex in 8"
+            :key="`row-${rowIndex-1}`"
+            class="grid-row"
+          >
+            <div
+              v-for="colIndex in 5"
+              :key="`cell-${rowIndex-1}-${colIndex-1}`"
+              class="grid-cell"
+              :class="{ active: matrix[rowIndex-1][colIndex-1] }"
+              @mousedown.prevent="handleMouseDown(rowIndex-1, colIndex-1)"
+              @mouseenter="dragCell(rowIndex-1, colIndex-1)"
+              @mouseup="handleMouseUp"
+            ></div>
+          </div>
         </div>
       </div>
+
+      <SpritePreview 
+        :spriteData="matrixToArray()"
+        :title="'Vista Previa LCD'"
+      />
     </div>
 
-    <!-- Botones de control -->
     <div class="controls">
       <button @click="clearGrid" class="btn btn-clear">
         Limpiar
@@ -36,7 +42,6 @@
       </button>
     </div>
 
-    <!-- Vista previa del array -->
     <div class="array-preview">
       <strong>Array (8 bytes):</strong>
       <code>{{ arrayRepresentation }}</code>
@@ -45,8 +50,13 @@
 </template>
 
 <script>
+import SpritePreview from './SpritePreview.vue'
+
 export default {
   name: 'SpriteEditor',
+  components: {
+    SpritePreview
+  },
   props: {
     title: {
       type: String,
@@ -88,12 +98,10 @@ export default {
     }
   },
   mounted() {
-    // Inicializa la matriz desde el modelValue
     if (this.modelValue && this.modelValue.length === 8) {
       this.arrayToMatrix(this.modelValue)
     }
 
-    // Event listeners para drag
     document.addEventListener('mouseup', this.stopDrag)
   },
   beforeUnmount() {
@@ -101,12 +109,10 @@ export default {
   },
   methods: {
     createEmptyMatrix() {
-      // Crea una matriz 8x5 (8 filas, 5 columnas)
       return Array(8).fill(null).map(() => Array(5).fill(false))
     },
     
     handleMouseDown(row, col) {
-      // Guarda la celda donde se hizo click
       this.clickedCell = { row, col }
       this.isDragging = true
       this.dragValue = !this.matrix[row][col]
@@ -118,7 +124,6 @@ export default {
     },
 
     handleMouseUp() {
-      // Si no se movió el mouse (click simple), no hace nada adicional
       this.isDragging = false
       this.dragValue = null
       this.clickedCell = null
@@ -154,13 +159,11 @@ export default {
     },
 
     matrixToArray() {
-      // Convierte la matriz 8x5 a un array de 8 bytes
-      // Cada fila se convierte en un byte (5 bits usados)
       return this.matrix.map(row => {
         let byte = 0
         for (let i = 0; i < 5; i++) {
           if (row[i]) {
-            byte |= (1 << (4 - i)) // Bit más significativo a la izquierda
+            byte |= (1 << (4 - i))
           }
         }
         return byte
@@ -168,7 +171,6 @@ export default {
     },
 
     arrayToMatrix(array) {
-      // Convierte un array de 8 bytes a matriz 8x5
       this.matrix = array.map(byte => {
         const row = []
         for (let i = 0; i < 5; i++) {
@@ -201,6 +203,12 @@ h3 {
   margin: 0;
   color: #333;
   font-size: 1.2rem;
+}
+
+.editor-layout {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
 }
 
 .grid-container {
