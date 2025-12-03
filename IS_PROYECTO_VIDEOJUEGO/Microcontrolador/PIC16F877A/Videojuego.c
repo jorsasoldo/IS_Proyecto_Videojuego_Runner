@@ -31,6 +31,14 @@ volatile unsigned char bufferRead = 0;
 unsigned char character[8];
 unsigned char obstacle[8];
 
+// Estructura de datos para metas del juego
+typedef struct {
+    unsigned char tipo;      // 0=tiempo, 1=puntaje, 2=distancia
+    unsigned int valor;      // Valor objetivo (0-9999)
+} GameGoal;
+
+GameGoal meta;
+
 // ============ FUNCIONES LCD ============
 void LCD_Pulso(void) {
     LCD_E = 1;
@@ -67,7 +75,7 @@ void LCD_Init(void) {
     
     __delay_ms(20);
     
-    LCD_Cmd(0x38);  // 8 bits, 2 l韓eas, 5x8
+    LCD_Cmd(0x38);  // 8 bits, 2 l铆neas, 5x8
     LCD_Cmd(0x0C);  // Display ON, cursor OFF
     LCD_Cmd(0x06);  // Incrementar cursor
     LCD_Cmd(0x01);  // Limpiar display
@@ -78,7 +86,7 @@ void LCD_CargarCGRAM(unsigned char posicion, unsigned char *sprite) {
     unsigned char i;
     unsigned char addr;
     
-    // Direcci髇 CGRAM: posici髇 0-7, cada una ocupa 8 bytes
+    // Direcci贸n CGRAM: posici贸n 0-7, cada una ocupa 8 bytes
     addr = 0x40 | ((posicion & 0x07) << 3);
     LCD_Cmd(addr);
     
@@ -170,7 +178,7 @@ unsigned char buscaChar(unsigned char c) {
 
 // ============ PARSEO JSON OPTIMIZADO ============
 void JSON_Parse(void) {
-    unsigned char c, i, temp[3], tempIdx;
+    unsigned char c, i, temp[4], tempIdx;
     
     // Espera '{'
     while(UART_LeeBuffer() != '{');
@@ -228,20 +236,69 @@ void JSON_Parse(void) {
             obstacle[i] = obstacle[i] * 10 + (temp[tempIdx] - '0');
         }
     }
+    
+    // Busca "goalType":
+    while(1) {
+        c = UART_LeeBuffer();
+        if(c == '"' && UART_LeeBuffer() == 'g')
+            break;
+    }
+    while(UART_LeeBuffer() != ':');
+    while(UART_LeeBuffer() != '"');
+    
+    // Lee tipo de meta: "time", "score" o "distance"
+    c = UART_LeeBuffer();
+    if(c == 't') {
+        meta.tipo = 0;  // tiempo
+    } else if(c == 's') {
+        meta.tipo = 1;  // puntaje (score)
+    } else if(c == 'd') {
+        meta.tipo = 2;  // distancia
+    }
+    
+    // Salta hasta "goalValue":
+    while(1) {
+        c = UART_LeeBuffer();
+        if(c == '"' && UART_LeeBuffer() == 'g')
+            break;
+    }
+    while(UART_LeeBuffer() != ':');
+    
+    // Lee valor de meta (hasta 4 d铆gitos)
+    tempIdx = 0;
+    do {
+        c = UART_LeeBuffer();
+    } while(c == ' ');
+    
+    while(c >= '0' && c <= '9') {
+        temp[tempIdx++] = c;
+        c = UART_LeeBuffer();
+    }
+    temp[tempIdx] = '\0';
+    
+    // Convierte string a n煤mero (unsigned int)
+    meta.valor = 0;
+    for(tempIdx = 0; temp[tempIdx] != '\0'; tempIdx++) {
+        meta.valor = meta.valor * 10 + (temp[tempIdx] - '0');
+    }
 }
 
-// ============ FUNCI覰 PRINCIPAL ============
+// ============ FUNCI脫N PRINCIPAL ============
 void main(void) {
     unsigned char i;
     
     UART_Init();
     LCD_Init();
     
-    // Inicializar sprites vac韔s
+    // Inicializar sprites vac铆os
     for(i = 0; i < 8; i++) {
         character[i] = 0;
         obstacle[i] = 0;
     }
+    
+    // Inicializar meta
+    meta.tipo = 1;    // Por defecto: puntaje
+    meta.valor = 100;
     
     UART_Escr_String("Sistema listo\r\n");
     
@@ -254,14 +311,33 @@ void main(void) {
             JSON_Parse();
             
             // Cargar sprites en CGRAM
-            LCD_CargarCGRAM(0, character);   // Posici髇 0
-            LCD_CargarCGRAM(1, obstacle);    // Posici髇 1
+            LCD_CargarCGRAM(0, character);   // Posici贸n 0
+            LCD_CargarCGRAM(1, obstacle);    // Posici贸n 1
             
             // Mostrar sprites en LCD
             LCD_MostrarChar(0, 0, 0);  // Muestra character (pos 0)
             LCD_MostrarChar(0, 2, 1);  // Muestra obstacle (pos 1)
             
-            // Enviar confirmaci髇 JSON
+            // Mostrar informaci贸n de la meta en LCD
+            LCD_MostrarChar(1, 0, 'M');
+            LCD_MostrarChar(1, 1, ':');
+            
+            // Mostrar tipo de meta
+            if(meta.tipo == 0) {
+                LCD_MostrarChar(1, 2, 'T');  // Tiempo
+            } else if(meta.tipo == 1) {
+                LCD_MostrarChar(1, 2, 'P');  // Puntaje
+            } else {
+                LCD_MostrarChar(1, 2, 'D');  // Distancia
+            }
+            
+            // Mostrar valor de meta (4 d铆gitos)
+            LCD_MostrarChar(1, 4, (meta.valor / 1000) + '0');
+            LCD_MostrarChar(1, 5, ((meta.valor / 100) % 10) + '0');
+            LCD_MostrarChar(1, 6, ((meta.valor / 10) % 10) + '0');
+            LCD_MostrarChar(1, 7, (meta.valor % 10) + '0');
+            
+            // Enviar confirmaci贸n JSON
             UART_Escr_String("{\"status\":\"ok\"}\r\n");
             
             // Limpiar buffer para siguiente mensaje
