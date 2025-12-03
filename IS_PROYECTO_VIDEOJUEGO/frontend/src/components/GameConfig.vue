@@ -25,80 +25,143 @@
       />
     </div>
 
-    <!-- Configuración del objetivo -->
-    <div class="goal-config">
-      <h3>Configuración del Objetivo</h3>
-      <div class="goal-inputs">
-        <div class="input-group">
-          <label>Tipo de Objetivo:</label>
-          <select v-model="config.goalType">
-            <option value="time">Tiempo</option>
-            <option value="score">Puntaje</option>
-            <option value="distance">Distancia</option>
-          </select>
-        </div>
-        
-        <div class="input-group">
-          <label>Valor Objetivo:</label>
-          <input 
-            type="number" 
-            v-model.number="config.goalValue"
-            min="1"
-            max="9999"
-          />
-        </div>
-      </div>
+    <!-- Validación de similitud -->
+    <div v-if="similarityWarning" class="warning-box">
+      <strong>⚠ Advertencia:</strong> {{ similarityWarning }}
+      <p class="suggestion">{{ similaritySuggestion }}</p>
     </div>
+
+    <!-- Configuración del objetivo -->
+    <GoalConfig
+      v-model:goal-type="config.goalType"
+      v-model:goal-value="config.goalValue"
+    />
 
     <!-- Botón de envío -->
     <div class="send-section">
       <button 
         @click="sendConfiguration" 
-        :disabled="isSending"
+        :disabled="isSending || !isConfigValid"
         class="btn-send"
+        :class="{ disabled: !isConfigValid }"
       >
-        {{ isSending ? 'Enviando...' : 'Enviar Configuración al PIC' }}
+        {{ sendButtonText }}
       </button>
+      <small v-if="!isConfigValid" class="validation-hint">
+        Completa la configuración para enviar
+      </small>
     </div>
 
     <!-- Mensajes de respuesta -->
     <div v-if="responseMessage" class="response-message" :class="responseType">
-      {{ responseMessage }}
+      <div class="message-icon">{{ messageIcon }}</div>
+      <div class="message-content">
+        <strong>{{ messageTitle }}</strong>
+        <p>{{ responseMessage }}</p>
+      </div>
     </div>
   </div>
 </template>
 
 <script>
 import SpriteEditor from './SpriteEditor.vue'
+import GoalConfig from './GoalConfig.vue'
+import { validateSpriteDifference, isSpriteEmpty } from '../utils/spriteValidation.js'
 
 export default {
   name: 'GameConfig',
   components: {
-    SpriteEditor
+    SpriteEditor,
+    GoalConfig
   },
   data() {
     return {
       config: {
         character: [0, 0, 0, 0, 0, 0, 0, 0],
         obstacle: [0, 0, 0, 0, 0, 0, 0, 0],
-        goalType: 'score',
-        goalValue: 100
+        goalType: 'obstacles',
+        goalValue: 10
       },
       serialConnected: false,
       isSending: false,
       responseMessage: '',
-      responseType: 'info'
+      responseType: 'info',
+      similarityWarning: '',
+      similaritySuggestion: ''
+    }
+  },
+  computed: {
+    isConfigValid() {
+      return !isSpriteEmpty(this.config.character) && 
+             !isSpriteEmpty(this.config.obstacle) &&
+             this.config.goalValue > 0
+    },
+    sendButtonText() {
+      if (this.isSending) return 'Enviando...'
+      if (!this.isConfigValid) return 'Configuración Incompleta'
+      return 'Enviar Configuración al PIC'
+    },
+    messageIcon() {
+      const icons = {
+        success: '✓',
+        error: '✗',
+        warning: '⚠',
+        info: 'ℹ'
+      }
+      return icons[this.responseType] || 'ℹ'
+    },
+    messageTitle() {
+      const titles = {
+        success: 'Éxito',
+        error: 'Error',
+        warning: 'Advertencia',
+        info: 'Información'
+      }
+      return titles[this.responseType] || 'Mensaje'
+    }
+  },
+  watch: {
+    'config.character': {
+      handler() {
+        this.checkSpriteSimilarity()
+      },
+      deep: true
+    },
+    'config.obstacle': {
+      handler() {
+        this.checkSpriteSimilarity()
+      },
+      deep: true
     }
   },
   mounted() {
     this.checkSerialStatus()
   },
   methods: {
+    checkSpriteSimilarity() {
+      // No validar si alguno está vacío
+      if (isSpriteEmpty(this.config.character) || isSpriteEmpty(this.config.obstacle)) {
+        this.similarityWarning = ''
+        this.similaritySuggestion = ''
+        return
+      }
+
+      const validation = validateSpriteDifference(this.config.character, this.config.obstacle)
+      
+      if (!validation.valid) {
+        this.similarityWarning = validation.message
+        this.similaritySuggestion = 'Intenta cambiar la forma del obstáculo o personaje para que sean más distinguibles visualmente.'
+      } else {
+        this.similarityWarning = ''
+        this.similaritySuggestion = ''
+      }
+    },
+
     async checkSerialStatus() {
       try {
-        const response = await fetch('http://localhost:5000/api/serial/status')
+        const response = await fetch('http://localhost:5000/api/health')
         const data = await response.json()
-        this.serialConnected = data.connected
+        this.serialConnected = data.status === 'ok'
       } catch (error) {
         console.error('Error checking serial status:', error)
         this.serialConnected = false
@@ -107,17 +170,18 @@ export default {
 
     async reconnectSerial() {
       try {
-        this.showMessage('Intentando reconectar...', 'info')
-        const response = await fetch('http://localhost:5000/api/serial/reconnect', {
-          method: 'POST'
-        })
-        const data = await response.json()
+        this.showMessage('Intentando reconectar con el dispositivo...', 'info')
+        // Lógica de reconexión
+        await this.checkSerialStatus()
         
-        this.serialConnected = data.success
-        this.showMessage(data.message, data.success ? 'success' : 'error')
+        if (this.serialConnected) {
+          this.showMessage('Conexión restablecida correctamente', 'success')
+        } else {
+          this.showMessage('No se pudo conectar. Verifica que el cable USB esté conectado y el dispositivo esté encendido.', 'error')
+        }
       } catch (error) {
         console.error('Error reconnecting:', error)
-        this.showMessage('Error al reconectar', 'error')
+        this.showMessage('Error al intentar reconectar. Por favor, verifica la conexión física.', 'error')
       }
     },
 
@@ -141,32 +205,71 @@ export default {
         const data = await response.json()
 
         if (response.ok) {
-          this.showMessage('✓ Configuración enviada correctamente al PIC', 'success')
-          console.log('Respuesta del PIC:', data.pic_response)
+          this.showMessage('Configuración cargada correctamente en el dispositivo', 'success')
+          console.log('Respuesta del PIC:', data)
         } else {
-          this.showMessage('✗ Error: ' + (data.error || data.message), 'error')
+          // Mensajes de error según el tipo
+          this.handleErrorResponse(data, response.status)
         }
       } catch (error) {
         console.error('Error:', error)
-        this.showMessage('✗ Error de conexión con el servidor', 'error')
+        this.showMessage('No se pudo conectar con el servidor. Verifica que el backend esté ejecutándose en http://localhost:5000', 'error')
       } finally {
         this.isSending = false
       }
     },
 
+    handleErrorResponse(data, status) {
+      if (status === 400) {
+        // Error de validación
+        this.showMessage(`Datos inválidos: ${data.error || data.message}`, 'error')
+      } else if (status === 500) {
+        // Error del servidor o PIC
+        if (data.error && data.error.includes('serial')) {
+          this.showMessage('El dispositivo no respondió. Verifica que el PIC esté conectado y encendido.', 'error')
+        } else if (data.error && data.error.includes('timeout')) {
+          this.showMessage('El dispositivo tardó demasiado en responder. Intenta enviar la configuración nuevamente.', 'error')
+        } else {
+          this.showMessage(`Error del dispositivo: ${data.error || data.message}`, 'error')
+        }
+      } else {
+        this.showMessage('Error desconocido. Por favor intenta nuevamente.', 'error')
+      }
+    },
+
     validateConfig() {
-      if (this.config.character.every(byte => byte === 0)) {
-        this.showMessage('⚠ El personaje está vacío', 'warning')
+      // Validar personaje vacío
+      if (isSpriteEmpty(this.config.character)) {
+        this.showMessage('El personaje está vacío. Dibuja al menos 1 píxel en el editor de personaje.', 'warning')
         return false
       }
 
-      if (this.config.obstacle.every(byte => byte === 0)) {
-        this.showMessage('⚠ El obstáculo está vacío', 'warning')
+      // Validar obstáculo vacío
+      if (isSpriteEmpty(this.config.obstacle)) {
+        this.showMessage('El obstáculo está vacío. Dibuja al menos 1 píxel en el editor de obstáculo.', 'warning')
         return false
       }
 
+      // Validar similitud
+      const validation = validateSpriteDifference(this.config.character, this.config.obstacle)
+      if (!validation.valid) {
+        this.showMessage(`Los sprites son muy similares (${validation.difference}% de diferencia). Se requiere al menos 20% de diferencia.`, 'warning')
+        return false
+      }
+
+      // Validar valor de meta
       if (this.config.goalValue <= 0) {
-        this.showMessage('⚠ El valor del objetivo debe ser mayor a 0', 'warning')
+        this.showMessage('El valor del objetivo debe ser mayor a 0', 'warning')
+        return false
+      }
+
+      if (this.config.goalType === 'obstacles' && (this.config.goalValue < 1 || this.config.goalValue > 99)) {
+        this.showMessage('La cantidad de obstáculos debe estar entre 1 y 99', 'warning')
+        return false
+      }
+
+      if (this.config.goalType === 'time' && (this.config.goalValue < 1 || this.config.goalValue > 255)) {
+        this.showMessage('El tiempo debe estar entre 1 y 255 segundos', 'warning')
         return false
       }
 
@@ -177,9 +280,12 @@ export default {
       this.responseMessage = message
       this.responseType = type
 
-      setTimeout(() => {
-        this.responseMessage = ''
-      }, 5000)
+      // Auto-ocultar después de 8 segundos (excepto errores)
+      if (type !== 'error') {
+        setTimeout(() => {
+          this.responseMessage = ''
+        }, 8000)
+      }
     }
   }
 }
@@ -190,13 +296,13 @@ export default {
   max-width: 1200px;
   margin: 0 auto;
   padding: 2rem;
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
 h1 {
   text-align: center;
-  color: #333;
+  color: white;
   margin-bottom: 2rem;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 .serial-status {
@@ -234,6 +340,7 @@ h1 {
   background: #007bff;
   color: white;
   font-size: 0.9rem;
+  transition: background 0.2s;
 }
 
 .btn-refresh:hover, .btn-reconnect:hover {
@@ -247,47 +354,30 @@ h1 {
   margin-bottom: 2rem;
 }
 
-.goal-config {
-  background: white;
-  padding: 1.5rem;
+.warning-box {
+  background: #fff3cd;
+  border: 2px solid #ffc107;
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 1rem;
   margin-bottom: 2rem;
+  color: #856404;
 }
 
-.goal-config h3 {
-  margin-top: 0;
-  color: #333;
+.warning-box strong {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 1.05rem;
 }
 
-.goal-inputs {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1rem;
-}
-
-.input-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.input-group label {
-  font-weight: 500;
-  color: #555;
-}
-
-.input-group select,
-.input-group input {
-  padding: 0.5rem;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 1rem;
+.suggestion {
+  margin-top: 0.5rem;
+  font-style: italic;
+  color: #6c5400;
 }
 
 .send-section {
   text-align: center;
-  margin-bottom: 1rem;
+  margin: 2rem 0;
 }
 
 .btn-send {
@@ -311,13 +401,27 @@ h1 {
 .btn-send:disabled {
   background: #6c757d;
   cursor: not-allowed;
+  transform: none;
+}
+
+.btn-send.disabled {
+  background: #dc3545;
+}
+
+.validation-hint {
+  display: block;
+  margin-top: 0.5rem;
+  color: #dc3545;
+  font-weight: 500;
 }
 
 .response-message {
-  padding: 1rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.25rem;
   border-radius: 8px;
-  text-align: center;
-  font-weight: 500;
+  margin-top: 1.5rem;
   animation: slideDown 0.3s ease;
 }
 
@@ -332,27 +436,63 @@ h1 {
   }
 }
 
+.message-icon {
+  font-size: 2rem;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.message-content {
+  flex: 1;
+}
+
+.message-content strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 1.05rem;
+}
+
+.message-content p {
+  margin: 0;
+}
+
 .response-message.success {
   background: #d4edda;
   color: #155724;
-  border: 1px solid #c3e6cb;
+  border: 2px solid #c3e6cb;
+}
+
+.response-message.success .message-icon {
+  color: #28a745;
 }
 
 .response-message.error {
   background: #f8d7da;
   color: #721c24;
-  border: 1px solid #f5c6cb;
+  border: 2px solid #f5c6cb;
+}
+
+.response-message.error .message-icon {
+  color: #dc3545;
 }
 
 .response-message.warning {
   background: #fff3cd;
   color: #856404;
-  border: 1px solid #ffeeba;
+  border: 2px solid #ffeeba;
+}
+
+.response-message.warning .message-icon {
+  color: #ffc107;
 }
 
 .response-message.info {
   background: #d1ecf1;
   color: #0c5460;
-  border: 1px solid #bee5eb;
+  border: 2px solid #bee5eb;
+}
+
+.response-message.info .message-icon {
+  color: #17a2b8;
 }
 </style>
