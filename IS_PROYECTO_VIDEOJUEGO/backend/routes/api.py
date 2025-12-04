@@ -28,37 +28,64 @@ def init_serial():
         return False
 
 def send_to_pic(data):
-    """Envía datos JSON al PIC vía serial"""
+    """Envía datos JSON al PIC vía serial y espera confirmación"""
     global ser
     
     # Intenta inicializar si no está conectado
     if ser is None or not ser.is_open:
         if not init_serial():
-            return False, "Puerto serial no disponible"
+            return False, "Puerto serial no disponible", None
     
     try:
+        # Limpia buffers antes de empezar
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        
+        # Pequeña pausa para que el PIC esté listo
+        time.sleep(0.2)
+        
         # Convierte el diccionario a JSON compacto (sin espacios)
         json_str = json.dumps(data, separators=(',', ':'))
         
-        # Envía el JSON con terminador
-        ser.write(json_str.encode('ascii'))
-        ser.flush()
+        # Envía el JSON byte por byte para evitar problemas de buffer
+        for char in json_str:
+            ser.write(char.encode('ascii'))
+            ser.flush()
+            time.sleep(0.001)  # 1ms entre caracteres
         
         print(f"→ Enviado al PIC: {json_str}")
         
-        # Espera respuesta del PIC (opcional, con timeout)
-        time.sleep(0.5)
-        if ser.in_waiting > 0:
-            response = ser.read(ser.in_waiting).decode('ascii', errors='ignore')
-            print(f"← Respuesta del PIC: {response}")
-            return True, response
+        # Espera respuesta del PIC con timeout extendido
+        response_timeout = 5  # 5 segundos para procesar
+        start_time = time.time()
+        response_buffer = ""
         
-        return True, "Datos enviados correctamente"
+        while (time.time() - start_time) < response_timeout:
+            if ser.in_waiting > 0:
+                chunk = ser.read(ser.in_waiting).decode('ascii', errors='ignore')
+                response_buffer += chunk
+                
+                # Busca el JSON de respuesta
+                if '{"status":"ok"}' in response_buffer:
+                    print(f"← Respuesta del PIC: {response_buffer}")
+                    return True, "Configuración cargada exitosamente", response_buffer
+            
+            time.sleep(0.1)  # Pequeña pausa para no saturar el CPU
+        
+        # Si llegamos aquí, no se recibió la confirmación
+        if response_buffer:
+            print(f"← Respuesta parcial del PIC: {response_buffer}")
+            # A veces el PIC responde pero el JSON está incompleto
+            if "ok" in response_buffer.lower():
+                return True, "Configuración cargada (respuesta parcial)", response_buffer
+            return False, f"Respuesta incompleta del PIC: {response_buffer}", response_buffer
+        else:
+            return False, "El PIC no respondió (timeout)", None
         
     except serial.SerialTimeoutException:
-        return False, "Timeout al enviar datos"
+        return False, "Timeout al enviar datos", None
     except Exception as e:
-        return False, f"Error en comunicación serial: {str(e)}"
+        return False, f"Error en comunicación serial: {str(e)}", None
 
 @api_bp.route('/send_config', methods=['POST'])
 def send_config():
@@ -82,27 +109,38 @@ def send_config():
         if not isinstance(data['obstacle'], list) or len(data['obstacle']) != 8:
             return jsonify({'error': 'obstacle debe ser un array de 8 elementos'}), 400
         
-        # Prepara datos para el PIC (solo character y obstacle)
+        # Valida goalType
+        if data['goalType'] not in ['time', 'obstacles']:
+            return jsonify({'error': 'goalType debe ser "time" u "obstacles"'}), 400
+        
+        # Valida goalValue
+        if not isinstance(data['goalValue'], (int, float)) or data['goalValue'] <= 0:
+            return jsonify({'error': 'goalValue debe ser un número positivo'}), 400
+        
+        # Prepara datos completos para el PIC
         pic_data = {
             'character': data['character'],
-            'obstacle': data['obstacle']
+            'obstacle': data['obstacle'],
+            'goalType': data['goalType'],
+            'goalValue': int(data['goalValue'])
         }
         
-        # Envía al PIC
-        success, message = send_to_pic(pic_data)
+        # Envía al PIC y espera confirmación
+        success, message, pic_response = send_to_pic(pic_data)
         
         if success:
             return jsonify({
                 'status': 'success',
-                'message': 'Configuración enviada al PIC',
+                'message': message,
                 'data': data,
-                'pic_response': message
+                'pic_response': pic_response
             }), 200
         else:
             return jsonify({
                 'status': 'error',
                 'message': message,
-                'data': data
+                'data': data,
+                'pic_response': pic_response
             }), 500
         
     except Exception as e:
