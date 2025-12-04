@@ -10,16 +10,6 @@
 #pragma config WRT = OFF
 #pragma config CP = OFF
 
-// LCD pines
-#define LCD_DATA PORTB
-#define LCD_DATA_TRIS TRISB
-#define LCD_RS PORTCbits.RC0
-#define LCD_RW PORTCbits.RC1
-#define LCD_E PORTCbits.RC2
-#define LCD_RS_TRIS TRISCbits.TRISC0
-#define LCD_RW_TRIS TRISCbits.TRISC1
-#define LCD_E_TRIS TRISCbits.TRISC2
-
 // Buffer circular reducido
 #define BUFFER_SIZE 32
 #define BUFFER_MASK 0x1F
@@ -40,45 +30,42 @@ typedef struct {
 GameGoal meta;
 
 // ============ FUNCIONES LCD ============
-void LCD_Pulso(void) {
-    LCD_E = 1;
-    __delay_us(1);
-    LCD_E = 0;
-    __delay_us(50);
-}
-
-void LCD_Cmd(unsigned char cmd) {
-    LCD_RS = 0;
-    LCD_RW = 0;
-    LCD_DATA = cmd;
-    LCD_Pulso();
+void E_ENC(void) {
+    PORTCbits.RC2 = 1;  // E = 1
+    __delay_ms(5);
+    PORTCbits.RC2 = 0;  // E = 0
     __delay_ms(2);
 }
 
-void LCD_Dato(unsigned char dato) {
-    LCD_RS = 1;
-    LCD_RW = 0;
-    LCD_DATA = dato;
-    LCD_Pulso();
-    __delay_us(50);
+void COMANDO(unsigned char VALOR) {
+    PORTB = VALOR;
+    PORTCbits.RC0 = 0;  // RS = 0 (comando)
+    PORTCbits.RC1 = 0;  // RW = 0 (escritura)
+    E_ENC();
+    __delay_ms(5);
+}
+
+void DIGITO(unsigned char VALOR) {
+    PORTB = VALOR;
+    PORTCbits.RC0 = 1;  // RS = 1 (dato)
+    PORTCbits.RC1 = 0;  // RW = 0 (escritura)
+    E_ENC();
+    __delay_us(500);
 }
 
 void LCD_Init(void) {
-    LCD_DATA_TRIS = 0x00;  // Puerto B como salida
-    LCD_RS_TRIS = 0;
-    LCD_RW_TRIS = 0;
-    LCD_E_TRIS = 0;
+    // Configurar puertos
+    TRISB = 0x00;  // Puerto B como salida (D0-D7)
+    TRISCbits.TRISC0 = 0;  // RC0 (RS) como salida
+    TRISCbits.TRISC1 = 0;  // RC1 (RW) como salida
+    TRISCbits.TRISC2 = 0;  // RC2 (E) como salida
     
-    LCD_RS = 0;
-    LCD_RW = 0;
-    LCD_E = 0;
+    __delay_ms(50);
     
-    __delay_ms(20);
-    
-    LCD_Cmd(0x38);  // 8 bits, 2 líneas, 5x8
-    LCD_Cmd(0x0C);  // Display ON, cursor OFF
-    LCD_Cmd(0x06);  // Incrementar cursor
-    LCD_Cmd(0x01);  // Limpiar display
+    COMANDO(0x38);  // 8 bits, 2 líneas, 5x8
+    COMANDO(0x0C);  // Display ON, cursor OFF
+    COMANDO(0x01);  // Limpiar display
+    COMANDO(0x06);  // Incrementar cursor
     __delay_ms(2);
 }
 
@@ -88,18 +75,18 @@ void LCD_CargarCGRAM(unsigned char posicion, unsigned char *sprite) {
     
     // Dirección CGRAM: posición 0-7, cada una ocupa 8 bytes
     addr = 0x40 | ((posicion & 0x07) << 3);
-    LCD_Cmd(addr);
+    COMANDO(addr);
     
     // Escribir 8 bytes en CGRAM
     for(i = 0; i < 8; i++) {
-        LCD_Dato(sprite[i]);
+        DIGITO(sprite[i]);
     }
     
     // Regresar a DDRAM
-    LCD_Cmd(0x80);
+    COMANDO(0x80);
 }
 
-void LCD_MostrarChar(unsigned char fila, unsigned char col, unsigned char caracter) {
+void LCD_Posicion(unsigned char col, unsigned char fila) {
     unsigned char addr;
     
     if(fila == 0)
@@ -107,8 +94,13 @@ void LCD_MostrarChar(unsigned char fila, unsigned char col, unsigned char caract
     else
         addr = 0xC0 + col;
     
-    LCD_Cmd(addr);
-    LCD_Dato(caracter);
+    COMANDO(addr);
+}
+
+void LCD_Escr_String(const char *str) {
+    while(*str) {
+        DIGITO(*str++);
+    }
 }
 
 // ============ FUNCIONES UART ============
@@ -176,9 +168,49 @@ unsigned char buscaChar(unsigned char c) {
     return 0;
 }
 
+// Limpia el buffer UART descartando todos los datos actuales
+void UART_LimpiaBuffer(void) {
+    bufferRead = bufferWrite;
+}
+
+// Espera hasta encontrar el inicio de un JSON válido
+void UART_BuscaInicioJSON(void) {
+    unsigned char c;
+    unsigned int timeout = 0;
+    
+    // Busca '{' descartando todo lo demás
+    while(timeout < 5000) {
+        if(UART_Disp()) {
+            c = UART_LeeBuffer();
+            if(c == '{') {
+                // Encontró inicio de JSON, retrocede el índice de lectura
+                if(bufferRead > 0) {
+                    bufferRead--;
+                } else {
+                    bufferRead = BUFFER_SIZE - 1;
+                }
+                return;
+            }
+        }
+        __delay_us(100);
+        timeout++;
+    }
+}
+
 // ============ PARSEO JSON OPTIMIZADO ============
 void JSON_Parse(void) {
     unsigned char c, i, temp[4], tempIdx;
+    unsigned int intentos = 0;
+    
+    // Espera y busca inicio de JSON válido
+    while(!buscaChar('{') && intentos < 1000) {
+        __delay_ms(10);
+        intentos++;
+    }
+    
+    if(intentos >= 1000) {
+        return; // Timeout esperando JSON
+    }
     
     // Espera '{'
     while(UART_LeeBuffer() != '{');
@@ -237,38 +269,46 @@ void JSON_Parse(void) {
         }
     }
     
-    // Busca "goalType":
+    // Busca "goalType": (busca 'g' de goalType)
     while(1) {
         c = UART_LeeBuffer();
-        if(c == '"' && UART_LeeBuffer() == 'g')
-            break;
+        if(c == 'g') {
+            c = UART_LeeBuffer();
+            if(c == 'o') // goalType o goalValue
+                break;
+        }
     }
+    
+    // Verifica si es goalType (siguiente char es 'a')
+    c = UART_LeeBuffer(); // 'a' de goalType
     while(UART_LeeBuffer() != ':');
     while(UART_LeeBuffer() != '"');
     
-    // Lee tipo de meta: "time", "score" o "distance"
+    // Lee tipo de meta: "time" u "obstacles"
     c = UART_LeeBuffer();
     if(c == 't') {
-        meta.tipo = 0;  // tiempo
-    } else if(c == 's') {
-        meta.tipo = 1;  // puntaje (score)
-    } else if(c == 'd') {
-        meta.tipo = 2;  // distancia
+        meta.tipo = 0;  // tiempo (time)
+    } else if(c == 'o') {
+        meta.tipo = 1;  // obstáculos (obstacles)
     }
     
     // Salta hasta "goalValue":
     while(1) {
         c = UART_LeeBuffer();
-        if(c == '"' && UART_LeeBuffer() == 'g')
-            break;
+        if(c == 'g') {
+            c = UART_LeeBuffer();
+            if(c == 'o') { // "goalValue"
+                while(UART_LeeBuffer() != ':');
+                break;
+            }
+        }
     }
-    while(UART_LeeBuffer() != ':');
     
     // Lee valor de meta (hasta 4 dígitos)
     tempIdx = 0;
     do {
         c = UART_LeeBuffer();
-    } while(c == ' ');
+    } while(c == ' ' || c == ',');
     
     while(c >= '0' && c <= '9') {
         temp[tempIdx++] = c;
@@ -297,51 +337,70 @@ void main(void) {
     }
     
     // Inicializar meta
-    meta.tipo = 1;    // Por defecto: puntaje
-    meta.valor = 100;
+    meta.tipo = 1;    // Por defecto: obstáculos
+    meta.valor = 10;
     
     UART_Escr_String("Sistema listo\r\n");
     
-    LCD_Cmd(0x01);  // Limpiar LCD
-    __delay_ms(2);
+    // Mensaje de bienvenida en LCD
+    LCD_Posicion(0, 0);
+    LCD_Escr_String("Esperando");
+    LCD_Posicion(0, 1);
+    LCD_Escr_String("config...");
     
     while(1) {
         // Espera JSON completo
         if(buscaChar('}')) {
+            // Limpia el buffer antes de parsear para evitar datos viejos
+            __delay_ms(100); // Espera a que termine de llegar todo el JSON
+            
             JSON_Parse();
+            
+            // Limpiar LCD
+            COMANDO(0x01);
+            __delay_ms(2);
             
             // Cargar sprites en CGRAM
             LCD_CargarCGRAM(0, character);   // Posición 0
             LCD_CargarCGRAM(1, obstacle);    // Posición 1
             
-            // Mostrar sprites en LCD
-            LCD_MostrarChar(0, 0, 0);  // Muestra character (pos 0)
-            LCD_MostrarChar(0, 2, 1);  // Muestra obstacle (pos 1)
+            // Mostrar sprites en LCD (línea 1)
+            LCD_Posicion(0, 0);
+            LCD_Escr_String("Char:");
+            DIGITO(0);  // Muestra character (pos 0 CGRAM)
+            LCD_Escr_String(" Obst:");
+            DIGITO(1);  // Muestra obstacle (pos 1 CGRAM)
             
-            // Mostrar información de la meta en LCD
-            LCD_MostrarChar(1, 0, 'M');
-            LCD_MostrarChar(1, 1, ':');
+            // Mostrar información de la meta en LCD (línea 2)
+            LCD_Posicion(0, 1);
+            LCD_Escr_String("Meta:");
             
             // Mostrar tipo de meta
             if(meta.tipo == 0) {
-                LCD_MostrarChar(1, 2, 'T');  // Tiempo
-            } else if(meta.tipo == 1) {
-                LCD_MostrarChar(1, 2, 'P');  // Puntaje
+                DIGITO('T');  // Tiempo
             } else {
-                LCD_MostrarChar(1, 2, 'D');  // Distancia
+                DIGITO('O');  // Obstáculos
             }
             
+            DIGITO('=');
+            
             // Mostrar valor de meta (4 dígitos)
-            LCD_MostrarChar(1, 4, (meta.valor / 1000) + '0');
-            LCD_MostrarChar(1, 5, ((meta.valor / 100) % 10) + '0');
-            LCD_MostrarChar(1, 6, ((meta.valor / 10) % 10) + '0');
-            LCD_MostrarChar(1, 7, (meta.valor % 10) + '0');
+            DIGITO((meta.valor / 1000) + '0');
+            DIGITO(((meta.valor / 100) % 10) + '0');
+            DIGITO(((meta.valor / 10) % 10) + '0');
+            DIGITO((meta.valor % 10) + '0');
             
             // Enviar confirmación JSON
+            __delay_ms(100); // Pequeña pausa antes de responder
             UART_Escr_String("{\"status\":\"ok\"}\r\n");
             
-            // Limpiar buffer para siguiente mensaje
-            bufferRead = bufferWrite;
+            // Limpiar buffer completamente para siguiente mensaje
+            UART_LimpiaBuffer();
+            
+            // Pequeña pausa antes de volver a esperar
+            __delay_ms(100);
         }
+        
+        __delay_ms(10); // Pausa pequeña para no saturar el loop
     }
 }
