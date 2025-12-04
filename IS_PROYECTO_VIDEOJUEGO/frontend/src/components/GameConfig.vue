@@ -60,19 +60,29 @@
         <p>{{ responseMessage }}</p>
       </div>
     </div>
+
+    <!-- Loading overlay -->
+    <LoadingSpinner 
+      :show="isSending"
+      message="Enviando configuración al PIC"
+      :steps="loadingSteps"
+      :current-step="currentLoadingStep"
+    />
   </div>
 </template>
 
 <script>
 import SpriteEditor from './SpriteEditor.vue'
 import GoalConfig from './GoalConfig.vue'
+import LoadingSpinner from './LoadingSpinner.vue'
 import { validateSpriteDifference, isSpriteEmpty } from '../utils/spriteValidation.js'
 
 export default {
   name: 'GameConfig',
   components: {
     SpriteEditor,
-    GoalConfig
+    GoalConfig,
+    LoadingSpinner
   },
   data() {
     return {
@@ -87,7 +97,14 @@ export default {
       responseMessage: '',
       responseType: 'info',
       similarityWarning: '',
-      similaritySuggestion: ''
+      similaritySuggestion: '',
+      loadingSteps: [
+        'Validando configuración',
+        'Preparando datos',
+        'Enviando al dispositivo',
+        'Esperando confirmación'
+      ],
+      currentLoadingStep: 0
     }
   },
   computed: {
@@ -171,7 +188,6 @@ export default {
     async reconnectSerial() {
       try {
         this.showMessage('Intentando reconectar con el dispositivo...', 'info')
-        // Lógica de reconexión
         await this.checkSerialStatus()
         
         if (this.serialConnected) {
@@ -192,8 +208,20 @@ export default {
 
       this.isSending = true
       this.responseMessage = ''
+      this.currentLoadingStep = 0
 
       try {
+        // Paso 1: Validando
+        this.currentLoadingStep = 0
+        await this.delay(300)
+
+        // Paso 2: Preparando datos
+        this.currentLoadingStep = 1
+        await this.delay(300)
+
+        // Paso 3: Enviando
+        this.currentLoadingStep = 2
+        
         const response = await fetch('http://localhost:5000/api/send_config', {
           method: 'POST',
           headers: {
@@ -202,13 +230,15 @@ export default {
           body: JSON.stringify(this.config)
         })
 
+        // Paso 4: Esperando confirmación
+        this.currentLoadingStep = 3
         const data = await response.json()
+        await this.delay(300)
 
         if (response.ok) {
           this.showMessage('Configuración cargada correctamente en el dispositivo', 'success')
           console.log('Respuesta del PIC:', data)
         } else {
-          // Mensajes de error según el tipo
           this.handleErrorResponse(data, response.status)
         }
       } catch (error) {
@@ -216,15 +246,18 @@ export default {
         this.showMessage('No se pudo conectar con el servidor. Verifica que el backend esté ejecutándose en http://localhost:5000', 'error')
       } finally {
         this.isSending = false
+        this.currentLoadingStep = 0
       }
+    },
+
+    delay(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms))
     },
 
     handleErrorResponse(data, status) {
       if (status === 400) {
-        // Error de validación
         this.showMessage(`Datos inválidos: ${data.error || data.message}`, 'error')
       } else if (status === 500) {
-        // Error del servidor o PIC
         if (data.error && data.error.includes('serial')) {
           this.showMessage('El dispositivo no respondió. Verifica que el PIC esté conectado y encendido.', 'error')
         } else if (data.error && data.error.includes('timeout')) {
@@ -238,26 +271,22 @@ export default {
     },
 
     validateConfig() {
-      // Validar personaje vacío
       if (isSpriteEmpty(this.config.character)) {
         this.showMessage('El personaje está vacío. Dibuja al menos 1 píxel en el editor de personaje.', 'warning')
         return false
       }
 
-      // Validar obstáculo vacío
       if (isSpriteEmpty(this.config.obstacle)) {
         this.showMessage('El obstáculo está vacío. Dibuja al menos 1 píxel en el editor de obstáculo.', 'warning')
         return false
       }
 
-      // Validar similitud
       const validation = validateSpriteDifference(this.config.character, this.config.obstacle)
       if (!validation.valid) {
         this.showMessage(`Los sprites son muy similares (${validation.difference}% de diferencia). Se requiere al menos 20% de diferencia.`, 'warning')
         return false
       }
 
-      // Validar valor de meta
       if (this.config.goalValue <= 0) {
         this.showMessage('El valor del objetivo debe ser mayor a 0', 'warning')
         return false
@@ -280,7 +309,6 @@ export default {
       this.responseMessage = message
       this.responseType = type
 
-      // Auto-ocultar después de 8 segundos (excepto errores)
       if (type !== 'error') {
         setTimeout(() => {
           this.responseMessage = ''
