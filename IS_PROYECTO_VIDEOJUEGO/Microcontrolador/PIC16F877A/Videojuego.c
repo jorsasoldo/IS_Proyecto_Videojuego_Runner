@@ -10,32 +10,36 @@
 #pragma config WRT = OFF
 #pragma config CP = OFF
 
-// ============ OPTIMIZACIÓN DE MEMORIA ============
-// Buffer circular más pequeño y eficiente
+
 #define BUFFER_SIZE 32
 #define BUFFER_MASK 0x1F
 volatile unsigned char uartBuffer[BUFFER_SIZE];
 volatile unsigned char bufferWrite = 0;
 volatile unsigned char bufferRead = 0;
 
-// Arrays para sprites (8 bytes cada uno) - sin redundancia
-unsigned char character[8];
-unsigned char obstacle[8];
-
-// Estructura compacta para metas del juego (3 bytes total)
+// Estructura completa que contiene toda la configuración del juego
 typedef struct {
-    unsigned char tipo;      // 0=tiempo, 1=obstáculos (1 byte)
-    unsigned int valor;      // Valor objetivo 0-9999 (2 bytes)
-} GameGoal;
+    // Sprites personalizados (8 bytes cada uno)
+    unsigned char character[8];     // Sprite del personaje
+    unsigned char obstacle[8];      // Sprite del obstáculo
+    
+    // Configuración de meta del juego
+    unsigned char goalType;         // 0=tiempo, 1=obstáculos
+    unsigned int goalValue;         // Valor objetivo (0-9999)
+    
+    // Flags de validación
+    unsigned char characterLoaded;  // 1 si character está cargado
+    unsigned char obstacleLoaded;   // 1 si obstacle está cargado
+    unsigned char goalLoaded;       // 1 si goal está cargado
+} LevelConfig;
 
-GameGoal meta;
+// Variable global de configuración del nivel
+LevelConfig nivel;
 
 // Buffer temporal multiuso - SE REUTILIZA en diferentes funciones
-// Esto ahorra memoria al no tener múltiples buffers locales
 #define TEMP_BUFFER_SIZE 5
 unsigned char tempBuffer[TEMP_BUFFER_SIZE];
 
-// ============ FUNCIONES LCD ============
 void E_ENC(void) {
     PORTCbits.RC2 = 1;
     __delay_ms(5);
@@ -74,22 +78,80 @@ void LCD_Init(void) {
     __delay_ms(2);
 }
 
-// Función optimizada - usa índice directo sin multiplicación
-void LCD_CargarCGRAM(unsigned char posicion, unsigned char *sprite) {
+unsigned char LCD_CargarPersonaje(void) {
     unsigned char i;
     unsigned char addr;
     
-    // DirecciónCGRAM: usa shift en lugar de multiplicación
-    addr = 0x40 | ((posicion & 0x07) << 3);
+    // Dirección CGRAM para posición 0 (0x40 = base CGRAM)
+    // Posición 0: 0x40 | (0 << 3) = 0x40
+    addr = 0x40;
     COMANDO(addr);
     
-    // Escribir 8 bytes en CGRAM
+    // Pequeña pausa para asegurar que el LCD procese el comando
+    __delay_us(100);
+    
+    // Escribir 8 bytes del personaje en CGRAM
     for(i = 0; i < 8; i++) {
-        DIGITO(sprite[i]);
+        DIGITO(nivel.character[i]);
+        __delay_us(50);  // Pausa entre bytes
+    }
+    
+    // Verificar que se escribieron los datos (lectura simple)
+    // En un LCD real, podríamos leer de vuelta, pero aquí confiamos
+    // en que si llegamos aquí, la escritura fue exitosa
+    
+    // Regresar a DDRAM (dirección 0x80)
+    COMANDO(0x80);
+    __delay_us(100);
+    
+    // Marcar como cargado
+    nivel.characterLoaded = 1;
+    
+    return 1;  // Éxito
+}
+
+unsigned char LCD_CargarObstaculo(void) {
+    unsigned char i;
+    unsigned char addr;
+    
+    // Dirección CGRAM para posición 1
+    // Posición 1: 0x40 | (1 << 3) = 0x48
+    addr = 0x40 | (1 << 3);
+    COMANDO(addr);
+    
+    // Pequeña pausa para asegurar que el LCD procese el comando
+    __delay_us(100);
+    
+    // Escribir 8 bytes del obstáculo en CGRAM
+    for(i = 0; i < 8; i++) {
+        DIGITO(nivel.obstacle[i]);
+        __delay_us(50);  // Pausa entre bytes
     }
     
     // Regresar a DDRAM
     COMANDO(0x80);
+    __delay_us(100);
+    
+    // Marcar como cargado
+    nivel.obstacleLoaded = 1;
+    
+    return 1;  // Éxito
+}
+
+unsigned char LCD_CargarTodosSprites(void) {
+    unsigned char exitosos = 0;
+    
+    // Cargar personaje en CGRAM 0x00
+    if(LCD_CargarPersonaje()) {
+        exitosos++;
+    }
+    
+    // Cargar obstáculo en CGRAM 0x01
+    if(LCD_CargarObstaculo()) {
+        exitosos++;
+    }
+    
+    return exitosos;
 }
 
 void LCD_Posicion(unsigned char col, unsigned char fila) {
@@ -104,7 +166,6 @@ void LCD_Escr_String(const char *str) {
     }
 }
 
-// ============ FUNCIONES UART ============
 void UART_Init(void) {
     TRISCbits.TRISC6 = 0;
     TRISCbits.TRISC7 = 1;
@@ -121,7 +182,6 @@ void UART_Init(void) {
     INTCONbits.PEIE = 1;
     INTCONbits.GIE = 1;
     
-    // Inicializar índices del buffer
     bufferWrite = 0;
     bufferRead = 0;
 }
@@ -139,18 +199,15 @@ void UART_Escr_String(const char *str) {
 
 void __interrupt() ISR(void) {
     if(PIR1bits.RCIF) {
-        // Manejo de error de overrun - limpia sin perder el dato actual
         if(RCSTAbits.OERR) {
             RCSTAbits.CREN = 0;
             RCSTAbits.CREN = 1;
         }
-        // Escritura optimizada usando máscara
         uartBuffer[bufferWrite & BUFFER_MASK] = RCREG;
         bufferWrite++;
     }
 }
 
-// Función inline optimizada para verificar datos disponibles
 unsigned char UART_Disp(void) {
     return (bufferWrite != bufferRead);
 }
@@ -163,7 +220,6 @@ unsigned char UART_LeeBuffer(void) {
     return dato;
 }
 
-// Búsqueda optimizada sin variables adicionales
 unsigned char buscaChar(unsigned char c) {
     unsigned char temp = bufferRead;
     while(temp != bufferWrite) {
@@ -174,12 +230,10 @@ unsigned char buscaChar(unsigned char c) {
     return 0;
 }
 
-// Función eficiente para limpiar buffer
 void UART_LimpiaBuffer(void) {
-    bufferRead = bufferWrite;  // Sincroniza índices
+    bufferRead = bufferWrite;
 }
 
-// Función optimizada para buscar inicio de JSON
 void UART_BuscaInicioJSON(void) {
     unsigned char c;
     unsigned int timeout = 0;
@@ -188,7 +242,6 @@ void UART_BuscaInicioJSON(void) {
         if(UART_Disp()) {
             c = UART_LeeBuffer();
             if(c == '{') {
-                // Retrocede el índice con manejo circular
                 bufferRead = (bufferRead == 0) ? (BUFFER_SIZE - 1) : (bufferRead - 1);
                 return;
             }
@@ -198,33 +251,24 @@ void UART_BuscaInicioJSON(void) {
     }
 }
 
-// ============ FUNCIONES DE CONVERSIÓN OPTIMIZADAS ============
-// Convierte string ASCII a número usando el buffer temporal global
-// Reutiliza tempBuffer en lugar de crear variable local
 unsigned int strToUInt(unsigned char len) {
     unsigned int resultado = 0;
     unsigned char i;
     
     for(i = 0; i < len && tempBuffer[i] != '\0'; i++) {
-        // Optimización: multiplicación por 10 usando shifts y suma
-        // resultado * 10 = (resultado << 3) + (resultado << 1)
         resultado = (resultado << 3) + (resultado << 1) + (tempBuffer[i] - '0');
     }
     
     return resultado;
 }
 
-// Lee dígitos y los almacena en tempBuffer
-// Retorna la cantidad de dígitos leídos
 unsigned char leerDigitos(void) {
     unsigned char c, idx = 0;
     
-    // Salta espacios y comas
     do {
         c = UART_LeeBuffer();
     } while(c == ' ' || c == ',');
     
-    // Lee dígitos
     while(c >= '0' && c <= '9' && idx < TEMP_BUFFER_SIZE - 1) {
         tempBuffer[idx++] = c;
         c = UART_LeeBuffer();
@@ -234,10 +278,14 @@ unsigned char leerDigitos(void) {
     return idx;
 }
 
-// ============ PARSEO JSON ULTRA-OPTIMIZADO ============
 void JSON_Parse(void) {
     unsigned char c, i, len;
     unsigned int intentos = 0;
+    
+    // Reiniciar flags de carga
+    nivel.characterLoaded = 0;
+    nivel.obstacleLoaded = 0;
+    nivel.goalLoaded = 0;
     
     // Espera inicio de JSON
     while(!buscaChar('{') && intentos < 1000) {
@@ -246,14 +294,11 @@ void JSON_Parse(void) {
     }
     
     if(intentos >= 1000) {
-        return; // Timeout
+        return;
     }
     
-    // Lee '{'
     while(UART_LeeBuffer() != '{');
     
-    // ===== PARSEO DE CHARACTER =====
-    // Busca "character":[
     while(1) {
         c = UART_LeeBuffer();
         if(c == '"' && UART_LeeBuffer() == 'c')
@@ -261,14 +306,13 @@ void JSON_Parse(void) {
     }
     while(UART_LeeBuffer() != '[');
     
-    // Lee 8 valores - OPTIMIZADO: usa función auxiliar
+    // Lee 8 valores para character
     for(i = 0; i < 8; i++) {
         len = leerDigitos();
-        character[i] = (unsigned char)strToUInt(len);
+        nivel.character[i] = (unsigned char)strToUInt(len);
     }
+    nivel.characterLoaded = 1;  // Marcar como cargado
     
-    // ===== PARSEO DE OBSTACLE =====
-    // Busca "obstacle":[
     while(1) {
         c = UART_LeeBuffer();
         if(c == '"' && UART_LeeBuffer() == 'o')
@@ -276,14 +320,13 @@ void JSON_Parse(void) {
     }
     while(UART_LeeBuffer() != '[');
     
-    // Lee 8 valores - REUTILIZA las mismas funciones
+    // Lee 8 valores para obstacle
     for(i = 0; i < 8; i++) {
         len = leerDigitos();
-        obstacle[i] = (unsigned char)strToUInt(len);
+        nivel.obstacle[i] = (unsigned char)strToUInt(len);
     }
+    nivel.obstacleLoaded = 1;  // Marcar como cargado
     
-    // ===== PARSEO DE GOALTYPE =====
-    // Busca "goalType":
     while(1) {
         c = UART_LeeBuffer();
         if(c == 'g') {
@@ -293,16 +336,12 @@ void JSON_Parse(void) {
         }
     }
     
-    // Salta hasta el valor
     while(UART_LeeBuffer() != ':');
     while(UART_LeeBuffer() != '"');
     
-    // Lee tipo: 't' = tiempo (0), 'o' = obstáculos (1)
     c = UART_LeeBuffer();
-    meta.tipo = (c == 't') ? 0 : 1;
+    nivel.goalType = (c == 't') ? 0 : 1;
     
-    // ===== PARSEO DE GOALVALUE =====
-    // Busca "goalValue":
     while(1) {
         c = UART_LeeBuffer();
         if(c == 'g') {
@@ -314,37 +353,105 @@ void JSON_Parse(void) {
         }
     }
     
-    // Lee valor de meta - REUTILIZA funciones optimizadas
     len = leerDigitos();
-    meta.valor = strToUInt(len);
+    nivel.goalValue = strToUInt(len);
+    nivel.goalLoaded = 1;  // Marcar como cargado
 }
 
-// ============ FUNCIÓN DE LIBERACIÓN DE RECURSOS ============
+void enviarConfirmacion(void) {
+    // Inicio del JSON
+    UART_Escr_String("{\"status\":\"loaded\"");
+    
+    // Estado del personaje
+    UART_Escr_String(",\"character\":\"");
+    if(nivel.characterLoaded) {
+        UART_Escr_String("ok");
+    } else {
+        UART_Escr_String("error");
+    }
+    UART_Escr_String("\"");
+    
+    // Estado del obstáculo
+    UART_Escr_String(",\"obstacle\":\"");
+    if(nivel.obstacleLoaded) {
+        UART_Escr_String("ok");
+    } else {
+        UART_Escr_String("error");
+    }
+    UART_Escr_String("\"");
+    
+    // Estado de la meta
+    UART_Escr_String(",\"goal\":\"");
+    if(nivel.goalLoaded) {
+        UART_Escr_String("ok");
+    } else {
+        UART_Escr_String("error");
+    }
+    UART_Escr_String("\"");
+    
+    // Información adicional de depuración (opcional)
+    UART_Escr_String(",\"goalType\":");
+    UART_Escr((nivel.goalType == 0) ? '0' : '1');
+    
+    UART_Escr_String(",\"goalValue\":");
+    // Enviar goalValue como número
+    {
+        unsigned char buffer[6];
+        unsigned char idx = 0;
+        unsigned int val = nivel.goalValue;
+        unsigned char temp;
+        
+        // Convertir número a string
+        if(val == 0) {
+            buffer[idx++] = '0';
+        } else {
+            // Extraer dígitos en orden inverso
+            unsigned char start = idx;
+            while(val > 0) {
+                buffer[idx++] = (val % 10) + '0';
+                val /= 10;
+            }
+            // Invertir los dígitos
+            unsigned char end = idx - 1;
+            while(start < end) {
+                temp = buffer[start];
+                buffer[start] = buffer[end];
+                buffer[end] = temp;
+                start++;
+                end--;
+            }
+        }
+        buffer[idx] = '\0';
+        
+        // Enviar el número
+        for(temp = 0; temp < idx; temp++) {
+            UART_Escr(buffer[temp]);
+        }
+    }
+    
+    // Fin del JSON
+    UART_Escr_String("}\r\n");
+}
+
 void limpiarRecursos(void) {
     unsigned char i;
     
-    // Limpia buffer UART
     UART_LimpiaBuffer();
     
-    // Limpia buffer temporal (opcional, se sobreescribirá)
     for(i = 0; i < TEMP_BUFFER_SIZE; i++) {
         tempBuffer[i] = 0;
     }
     
-    // Limpia buffers de hardware
     if(RCSTAbits.OERR) {
         RCSTAbits.CREN = 0;
         RCSTAbits.CREN = 1;
     }
     
-    // Flush de buffers hardware
     while(PIR1bits.RCIF) {
-        i = RCREG;  // Lee y descarta
+        i = RCREG;
     }
 }
 
-// ============ FUNCIÓN DE DISPLAY OPTIMIZADA ============
-// Usa variables locales mínimas y reutiliza registros
 void mostrarConfiguracion(void) {
     unsigned char digito;
     
@@ -352,56 +459,82 @@ void mostrarConfiguracion(void) {
     COMANDO(0x01);
     __delay_ms(2);
     
-    // Cargar sprites en CGRAM
-    LCD_CargarCGRAM(0, character);
-    LCD_CargarCGRAM(1, obstacle);
+    // Cargar sprites en CGRAM usando las funciones específicas
+    LCD_CargarPersonaje();   // Carga en CGRAM 0x00
+    LCD_CargarObstaculo();   // Carga en CGRAM 0x01
     
     // Línea 1: Mostrar sprites
     LCD_Posicion(0, 0);
     LCD_Escr_String("Char:");
-    DIGITO(0);
+    DIGITO(0);  // Muestra character desde CGRAM 0x00
     LCD_Escr_String(" Obst:");
-    DIGITO(1);
+    DIGITO(1);  // Muestra obstacle desde CGRAM 0x01
     
     // Línea 2: Mostrar meta
     LCD_Posicion(0, 1);
     LCD_Escr_String("Meta:");
     
-    // Tipo de meta
-    DIGITO((meta.tipo == 0) ? 'T' : 'O');
+    DIGITO((nivel.goalType == 0) ? 'T' : 'O');
     DIGITO('=');
     
-    // Valor de meta (4 dígitos) - optimizado con división inline
-    digito = meta.valor / 1000;
+    // Valor de meta (4 dígitos)
+    digito = nivel.goalValue / 1000;
     DIGITO(digito + '0');
     
-    digito = (meta.valor / 100) % 10;
+    digito = (nivel.goalValue / 100) % 10;
     DIGITO(digito + '0');
     
-    digito = (meta.valor / 10) % 10;
+    digito = (nivel.goalValue / 10) % 10;
     DIGITO(digito + '0');
     
-    digito = meta.valor % 10;
+    digito = nivel.goalValue % 10;
     DIGITO(digito + '0');
 }
 
-// ============ FUNCIÓN PRINCIPAL ============
-void main(void) {
+unsigned char validarConfiguracion(void) {
+    // Verificar que todos los componentes estén cargados
+    if(!nivel.characterLoaded || !nivel.obstacleLoaded || !nivel.goalLoaded) {
+        return 0;
+    }
+    
+    // Verificar que goalValue esté en rango válido
+    if(nivel.goalValue == 0 || nivel.goalValue > 9999) {
+        return 0;
+    }
+    
+    // Verificar que goalType sea válido
+    if(nivel.goalType > 1) {
+        return 0;
+    }
+    
+    return 1;  // Configuración válida
+}
+
+void inicializarNivel(void) {
     unsigned char i;
     
-    // Inicialización
+    // Inicializar sprites vacíos
+    for(i = 0; i < 8; i++) {
+        nivel.character[i] = 0;
+        nivel.obstacle[i] = 0;
+    }
+    
+    // Valores por defecto
+    nivel.goalType = 1;      // Obstáculos
+    nivel.goalValue = 10;    // 10 obstáculos
+    
+    // Flags de carga
+    nivel.characterLoaded = 0;
+    nivel.obstacleLoaded = 0;
+    nivel.goalLoaded = 0;
+}
+
+void main(void) {
     UART_Init();
     LCD_Init();
     
-    // Inicializar sprites vacíos - optimizado con memset inline
-    for(i = 0; i < 8; i++) {
-        character[i] = 0;
-        obstacle[i] = 0;
-    }
-    
-    // Inicializar meta con valores por defecto
-    meta.tipo = 1;    // Obstáculos
-    meta.valor = 10;
+    // Inicializar estructura de nivel
+    inicializarNivel();
     
     // Limpia todos los recursos
     limpiarRecursos();
@@ -414,39 +547,41 @@ void main(void) {
     LCD_Posicion(0, 1);
     LCD_Escr_String("config...");
     
-    // ===== LOOP PRINCIPAL OPTIMIZADO =====
     while(1) {
         // Verifica si hay JSON completo
         if(buscaChar('}')) {
-            // Pequeña espera para asegurar recepción completa
             __delay_ms(100);
             
-            // Parsea configuración
+            // Parsea configuración en la estructura
             JSON_Parse();
             
-            // Muestra en LCD
-            mostrarConfiguracion();
+            // Valida la configuración recibida
+            if(validarConfiguracion()) {
+                // Muestra en LCD (esto carga sprites en CGRAM)
+                mostrarConfiguracion();
+                
+                // Pequeña pausa para asegurar que LCD terminó
+                __delay_ms(100);
+                
+                // Envía confirmación detallada
+                enviarConfirmacion();
+            } else {
+                // Envía error si la validación falló
+                UART_Escr_String("{\"status\":\"error\",\"message\":\"invalid config\"}\r\n");
+            }
             
-            // Envía confirmación JSON
-            __delay_ms(100);
-            UART_Escr_String("{\"status\":\"ok\"}\r\n");
-            
-            // CRÍTICO: Limpia todos los recursos después de procesar
+            // Limpia recursos
             limpiarRecursos();
             
-            // Pausa antes de siguiente iteración
             __delay_ms(100);
         }
         
-        // Pausa pequeña para no saturar CPU
         __delay_ms(10);
         
-        // Mantenimiento preventivo del buffer cada N iteraciones
-        // Esto previene acumulación de datos basura
+        // Mantenimiento preventivo
         static unsigned char contador = 0;
         if(++contador > 100) {
             contador = 0;
-            // Si el buffer tiene datos antiguos sin procesar, límpialo
             if(UART_Disp() && !buscaChar('{')) {
                 limpiarRecursos();
             }
