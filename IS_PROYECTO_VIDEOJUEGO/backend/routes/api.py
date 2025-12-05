@@ -2,273 +2,191 @@ from flask import Blueprint, request, jsonify
 import serial
 import json
 import time
-import logging
-from datetime import datetime
+import threading  # AGREGAR ESTE IMPORT
 from config import Config
 
 api_bp = Blueprint('api', __name__)
 
-# Configurar logging detallado
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('serial_communication.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
 # Variable global para la conexión serial
 ser = None
+# AGREGAR ESTAS VARIABLES
+watchdog_running = False
+watchdog_thread = None
+connection_status = {
+    'is_connected': False,
+    'last_check': None,
+    'disconnection_count': 0,
+    'reconnection_attempts': 0
+}
 
-# Configuración de reintentos
-MAX_RETRIES = 3
-RETRY_DELAY = 1  # segundos
-SEND_TIMEOUT = 5  # segundos
+def check_connection():
+    """Verifica si la conexión serial sigue activa"""
+    global ser
+    try:
+        if ser is None:
+            return False
+        if not ser.is_open:
+            return False
+        # Verificar que el puerto responda
+        return True
+    except:
+        return False
 
-class SerialCommunicationError(Exception):
-    """Excepción personalizada para errores de comunicación serial"""
-    pass
-
-def log_serial_event(event_type, message, data=None):
-    """Registra eventos de comunicación serial con contexto adicional"""
-    log_entry = {
-        'timestamp': datetime.now().isoformat(),
-        'event': event_type,
-        'message': message
-    }
-    if data:
-        log_entry['data'] = data
+def watchdog_worker():
+    """
+    Thread que verifica la conexión serial cada 5 segundos
+    y reconecta automáticamente si se detecta desconexión
+    """
+    global ser, watchdog_running, connection_status
     
-    logger.info(json.dumps(log_entry, indent=2))
+    print("[WATCHDOG] Iniciado - Verificando conexión cada 5 segundos")
+    
+    while watchdog_running:
+        time.sleep(5)  # Verificar cada 5 segundos
+        
+        connection_status['last_check'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        if not check_connection():
+            if connection_status['is_connected']:
+                # Detectada desconexión
+                connection_status['disconnection_count'] += 1
+                print(f"[WATCHDOG] ⚠ Desconexión detectada (#{connection_status['disconnection_count']})")
+                connection_status['is_connected'] = False
+            
+            # Intentar reconectar
+            print(f"[WATCHDOG] Intentando reconectar...")
+            connection_status['reconnection_attempts'] += 1
+            
+            if init_serial():
+                print(f"[WATCHDOG] ✓ Reconexión exitosa")
+                connection_status['is_connected'] = True
+            else:
+                print(f"[WATCHDOG] ✗ Reconexión fallida (intento #{connection_status['reconnection_attempts']})")
+        else:
+            # Conexión activa
+            connection_status['is_connected'] = True
+    
+    print("[WATCHDOG] Detenido")
+
+def start_watchdog():
+    """Inicia el thread del watchdog"""
+    global watchdog_running, watchdog_thread
+    
+    if watchdog_running:
+        print("[WATCHDOG] Ya está en ejecución")
+        return
+    
+    watchdog_running = True
+    watchdog_thread = threading.Thread(target=watchdog_worker, daemon=True)
+    watchdog_thread.start()
+    print("[WATCHDOG] Thread iniciado")
+
+def stop_watchdog():
+    """Detiene el thread del watchdog"""
+    global watchdog_running
+    
+    if not watchdog_running:
+        return
+    
+    watchdog_running = False
+    print("[WATCHDOG] Deteniendo...")
 
 def init_serial():
-    """Inicializa la conexión serial con el PIC con reintentos"""
-    global ser
-    
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            log_serial_event('INIT_ATTEMPT', f'Intento {attempt} de {MAX_RETRIES}')
-            
-            # Cerrar conexión previa si existe
-            if ser is not None and ser.is_open:
-                ser.close()
-                time.sleep(0.5)
-            
-            ser = serial.Serial(
-                port=Config.SERIAL_PORT,
-                baudrate=Config.SERIAL_BAUDRATE,
-                timeout=Config.SERIAL_TIMEOUT,
-                write_timeout=2,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE
-            )
-            
-            # Espera a que el PIC se inicialice
-            time.sleep(2)
-            
-            # Limpia buffers
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
-            
-            log_serial_event(
-                'INIT_SUCCESS',
-                f'Puerto {Config.SERIAL_PORT} conectado exitosamente',
-                {
-                    'port': Config.SERIAL_PORT,
-                    'baudrate': Config.SERIAL_BAUDRATE,
-                    'attempt': attempt
-                }
-            )
-            
-            return True
-            
-        except serial.SerialException as e:
-            log_serial_event(
-                'INIT_ERROR',
-                f'Error en intento {attempt}: {str(e)}',
-                {'error': str(e), 'attempt': attempt}
-            )
-            
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY)
-            else:
-                ser = None
-                log_serial_event('INIT_FAILED', 'Todos los intentos fallaron')
-                return False
-    
-    return False
-
-def verify_connection():
-    """Verifica que la conexión serial esté activa"""
-    global ser
-    
-    if ser is None:
+    """Inicializa la conexión serial con el PIC"""
+    global ser, connection_status
+    try:
+        # Cerrar conexión anterior si existe
+        if ser is not None and ser.is_open:
+            ser.close()
+        
+        ser = serial.Serial(
+            port=Config.SERIAL_PORT,
+            baudrate=Config.SERIAL_BAUDRATE,
+            timeout=Config.SERIAL_TIMEOUT,
+            write_timeout=2
+        )
+        time.sleep(2)  # Espera a que el PIC se inicialice
+        
+        # Limpiar buffers
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        
+        connection_status['is_connected'] = True
+        print(f"✓ Puerto serial {Config.SERIAL_PORT} conectado")
+        return True
+    except serial.SerialException as e:
+        connection_status['is_connected'] = False
+        print(f"✗ Error al abrir puerto serial: {e}")
+        ser = None
         return False
+
+def send_to_pic(data):
+    """Envía datos JSON al PIC vía serial y espera confirmación"""
+    global ser
+    
+    # Intenta inicializar si no está conectado
+    if ser is None or not ser.is_open:
+        if not init_serial():
+            return False, "Puerto serial no disponible", None
     
     try:
-        return ser.is_open and ser.in_waiting >= 0
-    except (serial.SerialException, OSError):
-        return False
-
-def send_to_pic_with_retry(data):
-    """Envía datos al PIC con reintentos automáticos"""
-    global ser
-    
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            log_serial_event(
-                'SEND_ATTEMPT',
-                f'Intento de envío {attempt} de {MAX_RETRIES}',
-                {'data_summary': {
-                    'goalType': data.get('goalType'),
-                    'goalValue': data.get('goalValue')
-                }}
-            )
-            
-            # Verifica conexión
-            if not verify_connection():
-                log_serial_event('SEND_ERROR', 'Conexión no disponible, reintentando inicialización')
-                if not init_serial():
-                    if attempt < MAX_RETRIES:
-                        time.sleep(RETRY_DELAY)
-                        continue
-                    raise SerialCommunicationError('No se pudo establecer conexión serial')
-            
-            # Limpia buffers
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
-            time.sleep(0.2)
-            
-            # Convierte a JSON compacto
-            json_str = json.dumps(data, separators=(',', ':'))
-            
-            log_serial_event(
-                'SENDING_DATA',
-                'Enviando JSON al PIC',
-                {'json_length': len(json_str), 'json': json_str}
-            )
-            
-            # Envía byte por byte
-            bytes_sent = 0
-            for char in json_str:
-                ser.write(char.encode('ascii'))
-                ser.flush()
-                bytes_sent += 1
-                time.sleep(0.001)
-            
-            log_serial_event('DATA_SENT', f'{bytes_sent} bytes enviados correctamente')
-            
-            # Espera respuesta con timeout
-            response_buffer = ""
-            start_time = time.time()
-            
-            log_serial_event('WAITING_RESPONSE', 'Esperando confirmación del PIC')
-            
-            while (time.time() - start_time) < SEND_TIMEOUT:
-                if ser.in_waiting > 0:
-                    chunk = ser.read(ser.in_waiting).decode('ascii', errors='ignore')
-                    response_buffer += chunk
-                    
-                    log_serial_event(
-                        'RESPONSE_CHUNK',
-                        'Datos recibidos del PIC',
-                        {'chunk': chunk, 'buffer_length': len(response_buffer)}
-                    )
-                    
-                    # Verifica respuesta completa
-                    if '{"status":"ok"}' in response_buffer:
-                        log_serial_event(
-                            'SEND_SUCCESS',
-                            'Confirmación recibida del PIC',
-                            {
-                                'attempt': attempt,
-                                'response': response_buffer,
-                                'elapsed_time': time.time() - start_time
-                            }
-                        )
-                        return True, 'Configuración cargada exitosamente', response_buffer
+        # Convierte el diccionario a JSON compacto (sin espacios)
+        json_str = json.dumps(data, separators=(',', ':'))
+        
+        # Limpia el buffer de entrada antes de enviar
+        ser.reset_input_buffer()
+        
+        # Envía el JSON
+        ser.write(json_str.encode('ascii'))
+        ser.flush()
+        
+        print(f"→ Enviado al PIC: {json_str}")
+        
+        # Espera respuesta del PIC con timeout extendido
+        response_timeout = 3  # 3 segundos para procesar
+        start_time = time.time()
+        response_buffer = ""
+        
+        while (time.time() - start_time) < response_timeout:
+            if ser.in_waiting > 0:
+                chunk = ser.read(ser.in_waiting).decode('ascii', errors='ignore')
+                response_buffer += chunk
                 
-                time.sleep(0.1)
+                # Busca el JSON de respuesta
+                if '{"status":"ok"}' in response_buffer:
+                    print(f"← Respuesta del PIC: {response_buffer}")
+                    return True, "Configuración cargada exitosamente", response_buffer
             
-            # Timeout - evalúa respuesta parcial
-            log_serial_event(
-                'RESPONSE_TIMEOUT',
-                f'Timeout en intento {attempt}',
-                {
-                    'partial_response': response_buffer,
-                    'elapsed_time': time.time() - start_time
-                }
-            )
-            
-            if response_buffer and 'ok' in response_buffer.lower():
-                log_serial_event('PARTIAL_SUCCESS', 'Respuesta parcial pero parece exitosa')
-                return True, 'Configuración cargada (respuesta parcial)', response_buffer
-            
-            # Si no es el último intento, reintentar
-            if attempt < MAX_RETRIES:
-                log_serial_event('RETRY', f'Reintentando en {RETRY_DELAY} segundos...')
-                time.sleep(RETRY_DELAY)
-            else:
-                raise SerialCommunicationError(f'El PIC no respondió después de {MAX_RETRIES} intentos')
-                
-        except serial.SerialTimeoutException as e:
-            log_serial_event(
-                'TIMEOUT_ERROR',
-                f'Timeout en intento {attempt}',
-                {'error': str(e)}
-            )
-            if attempt >= MAX_RETRIES:
-                raise SerialCommunicationError('Timeout al enviar datos')
-                
-        except serial.SerialException as e:
-            log_serial_event(
-                'SERIAL_ERROR',
-                f'Error de comunicación en intento {attempt}',
-                {'error': str(e)}
-            )
-            if attempt >= MAX_RETRIES:
-                raise SerialCommunicationError(f'Error de comunicación: {str(e)}')
-                
-        except Exception as e:
-            log_serial_event(
-                'UNEXPECTED_ERROR',
-                f'Error inesperado en intento {attempt}',
-                {'error': str(e), 'type': type(e).__name__}
-            )
-            if attempt >= MAX_RETRIES:
-                raise
-    
-    return False, 'Error desconocido en todos los intentos', None
+            time.sleep(0.1)  # Pequeña pausa para no saturar el CPU
+        
+        # Si llegamos aquí, no se recibió la confirmación
+        if response_buffer:
+            print(f"← Respuesta parcial del PIC: {response_buffer}")
+            return False, f"Respuesta incompleta del PIC: {response_buffer}", response_buffer
+        else:
+            return False, "El PIC no respondió (timeout)", None
+        
+    except serial.SerialTimeoutException:
+        return False, "Timeout al enviar datos", None
+    except Exception as e:
+        return False, f"Error en comunicación serial: {str(e)}", None
 
 @api_bp.route('/send_config', methods=['POST'])
 def send_config():
     """Recibe configuración del frontend y la envía al PIC"""
-    request_id = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-    
     try:
-        log_serial_event('REQUEST_RECEIVED', f'Nueva solicitud de configuración', {'request_id': request_id})
-        
         data = request.get_json()
         
         if not data:
-            log_serial_event('VALIDATION_ERROR', 'No se recibieron datos', {'request_id': request_id})
             return jsonify({'error': 'No data provided'}), 400
         
-        # Validaciones
+        # Valida campos requeridos
         required_fields = ['character', 'obstacle', 'goalType', 'goalValue']
         for field in required_fields:
             if field not in data:
-                log_serial_event(
-                    'VALIDATION_ERROR',
-                    f'Campo faltante: {field}',
-                    {'request_id': request_id, 'missing_field': field}
-                )
                 return jsonify({'error': f'Missing field: {field}'}), 400
         
-        # Valida sprites
+        # Valida que character y obstacle sean arrays de 8 elementos
         if not isinstance(data['character'], list) or len(data['character']) != 8:
             return jsonify({'error': 'character debe ser un array de 8 elementos'}), 400
         
@@ -283,9 +201,7 @@ def send_config():
         if not isinstance(data['goalValue'], (int, float)) or data['goalValue'] <= 0:
             return jsonify({'error': 'goalValue debe ser un número positivo'}), 400
         
-        log_serial_event('VALIDATION_SUCCESS', 'Datos validados correctamente', {'request_id': request_id})
-        
-        # Prepara datos para el PIC
+        # Prepara datos completos para el PIC
         pic_data = {
             'character': data['character'],
             'obstacle': data['obstacle'],
@@ -293,58 +209,26 @@ def send_config():
             'goalValue': int(data['goalValue'])
         }
         
-        # Envía con reintentos
-        success, message, pic_response = send_to_pic_with_retry(pic_data)
+        # Envía al PIC y espera confirmación
+        success, message, pic_response = send_to_pic(pic_data)
         
         if success:
-            log_serial_event(
-                'REQUEST_SUCCESS',
-                'Solicitud completada exitosamente',
-                {'request_id': request_id}
-            )
             return jsonify({
                 'status': 'success',
                 'message': message,
                 'data': data,
-                'pic_response': pic_response,
-                'request_id': request_id
+                'pic_response': pic_response
             }), 200
         else:
-            log_serial_event(
-                'REQUEST_FAILED',
-                'Solicitud fallida',
-                {'request_id': request_id, 'reason': message}
-            )
             return jsonify({
                 'status': 'error',
                 'message': message,
                 'data': data,
-                'pic_response': pic_response,
-                'request_id': request_id
+                'pic_response': pic_response
             }), 500
         
-    except SerialCommunicationError as e:
-        log_serial_event(
-            'COMMUNICATION_ERROR',
-            str(e),
-            {'request_id': request_id}
-        )
-        return jsonify({
-            'error': str(e),
-            'request_id': request_id,
-            'retry_info': f'Se realizaron {MAX_RETRIES} intentos'
-        }), 500
-        
     except Exception as e:
-        log_serial_event(
-            'UNEXPECTED_ERROR',
-            f'Error inesperado: {str(e)}',
-            {'request_id': request_id, 'type': type(e).__name__}
-        )
-        return jsonify({
-            'error': str(e),
-            'request_id': request_id
-        }), 500
+        return jsonify({'error': str(e)}), 500
 
 @api_bp.route('/serial/status', methods=['GET'])
 def serial_status():
@@ -354,73 +238,71 @@ def serial_status():
     if ser is None:
         init_serial()
     
-    is_connected = verify_connection()
+    is_connected = ser is not None and ser.is_open
     
-    status_info = {
+    return jsonify({
         'connected': is_connected,
         'port': Config.SERIAL_PORT if is_connected else None,
-        'baudrate': Config.SERIAL_BAUDRATE if is_connected else None,
-        'timestamp': datetime.now().isoformat()
-    }
-    
-    log_serial_event('STATUS_CHECK', 'Estado de conexión consultado', status_info)
-    
-    return jsonify(status_info), 200
+        'baudrate': Config.SERIAL_BAUDRATE if is_connected else None
+    }), 200
 
 @api_bp.route('/serial/reconnect', methods=['POST'])
 def serial_reconnect():
     """Intenta reconectar el puerto serial"""
     global ser
     
-    log_serial_event('RECONNECT_REQUEST', 'Solicitud de reconexión manual')
-    
     # Cierra conexión existente
     if ser is not None and ser.is_open:
-        try:
-            ser.close()
-            log_serial_event('CONNECTION_CLOSED', 'Conexión anterior cerrada')
-        except Exception as e:
-            log_serial_event('CLOSE_ERROR', f'Error al cerrar: {str(e)}')
+        ser.close()
     
     success = init_serial()
     
     return jsonify({
         'success': success,
-        'message': 'Conectado exitosamente' if success else 'No se pudo conectar',
-        'timestamp': datetime.now().isoformat()
+        'message': 'Conectado' if success else 'No se pudo conectar'
     }), 200 if success else 500
 
-@api_bp.route('/logs/recent', methods=['GET'])
-def get_recent_logs():
-    """Obtiene los logs recientes (últimas 50 líneas)"""
-    try:
-        with open('serial_communication.log', 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            recent_lines = lines[-50:] if len(lines) > 50 else lines
-            
-        return jsonify({
-            'logs': ''.join(recent_lines),
-            'total_lines': len(lines),
-            'returned_lines': len(recent_lines)
-        }), 200
-    except FileNotFoundError:
-        return jsonify({'error': 'Log file not found'}), 404
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+@api_bp.route('/watchdog/start', methods=['POST'])
+def start_watchdog_endpoint():
+    """Inicia el watchdog de monitoreo de conexión serial"""
+    start_watchdog()
+    return jsonify({
+        'success': True,
+        'message': 'Watchdog iniciado'
+    }), 200
+
+@api_bp.route('/watchdog/stop', methods=['POST'])
+def stop_watchdog_endpoint():
+    """Detiene el watchdog de monitoreo de conexión serial"""
+    stop_watchdog()
+    return jsonify({
+        'success': True,
+        'message': 'Watchdog detenido'
+    }), 200
+
+@api_bp.route('/watchdog/status', methods=['GET'])
+def watchdog_status():
+    """Obtiene el estado del watchdog y estadísticas de conexión"""
+    global watchdog_running, connection_status
+    
+    return jsonify({
+        'watchdog_active': watchdog_running,
+        'connection': {
+            'is_connected': connection_status['is_connected'],
+            'last_check': connection_status['last_check'],
+            'disconnections': connection_status['disconnection_count'],
+            'reconnection_attempts': connection_status['reconnection_attempts']
+        }
+    }), 200
 
 @api_bp.route('/health', methods=['GET'])
 def health():
-    """Endpoint de health check con información detallada"""
-    health_info = {
-        'status': 'ok',
-        'timestamp': datetime.now().isoformat(),
-        'serial_connected': verify_connection(),
-        'config': {
-            'port': Config.SERIAL_PORT,
-            'baudrate': Config.SERIAL_BAUDRATE,
-            'timeout': Config.SERIAL_TIMEOUT,
-            'max_retries': MAX_RETRIES
-        }
-    }
+    """Endpoint de health check"""
+    # Iniciar watchdog automáticamente si no está corriendo
+    if not watchdog_running:
+        start_watchdog()
     
-    return jsonify(health_info), 200
+    return jsonify({
+        'status': 'ok',
+        'watchdog_active': watchdog_running
+    }), 200
