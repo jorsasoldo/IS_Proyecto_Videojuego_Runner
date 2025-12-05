@@ -10,7 +10,24 @@
       <button v-if="!serialConnected" @click="reconnectSerial" class="btn-reconnect">
         Reconectar
       </button>
+      <button @click="toggleLogs" class="btn-logs" :class="{ active: showLogs }">
+        📋 Logs
+      </button>
     </div>
+
+    <!-- Panel de logs -->
+    <transition name="slide">
+      <div v-if="showLogs" class="logs-panel">
+        <div class="logs-header">
+          <h3>📊 Registro de Comunicación Serial</h3>
+          <button @click="refreshLogs" class="btn-refresh-logs">Actualizar</button>
+        </div>
+        <div class="logs-content" ref="logsContent">
+          <pre v-if="logs">{{ logs }}</pre>
+          <p v-else class="no-logs">No hay logs disponibles</p>
+        </div>
+      </div>
+    </transition>
 
     <!-- Editores de sprites -->
     <div class="editors-container">
@@ -25,11 +42,13 @@
       />
     </div>
 
-    <!-- Validación de similitud -->
-    <div v-if="similarityWarning" class="warning-box">
-      <strong>⚠ Advertencia:</strong> {{ similarityWarning }}
-      <p class="suggestion">{{ similaritySuggestion }}</p>
-    </div>
+    <!-- Panel de sugerencias inteligentes -->
+    <SpriteSuggestions
+      v-if="validationResult && !validationResult.valid"
+      :suggestions="validationResult.suggestions"
+      :difference="validationResult.difference"
+      @close="dismissSuggestions"
+    />
 
     <!-- Configuración del objetivo -->
     <GoalConfig
@@ -50,6 +69,9 @@
       <small v-if="!isConfigValid" class="validation-hint">
         Completa la configuración para enviar
       </small>
+      <div v-if="lastRequestId" class="request-id">
+        ID de solicitud: {{ lastRequestId }}
+      </div>
     </div>
 
     <!-- Mensajes de respuesta -->
@@ -58,6 +80,7 @@
       <div class="message-content">
         <strong>{{ messageTitle }}</strong>
         <p>{{ responseMessage }}</p>
+        <small v-if="retryInfo" class="retry-info">{{ retryInfo }}</small>
       </div>
     </div>
 
@@ -75,6 +98,7 @@
 import SpriteEditor from './SpriteEditor.vue'
 import GoalConfig from './GoalConfig.vue'
 import LoadingSpinner from './LoadingSpinner.vue'
+import SpriteSuggestions from './SpriteSuggestions.vue'
 import { validateSpriteDifference, isSpriteEmpty } from '../utils/spriteValidation.js'
 
 export default {
@@ -82,7 +106,8 @@ export default {
   components: {
     SpriteEditor,
     GoalConfig,
-    LoadingSpinner
+    LoadingSpinner,
+    SpriteSuggestions
   },
   data() {
     return {
@@ -96,15 +121,18 @@ export default {
       isSending: false,
       responseMessage: '',
       responseType: 'info',
-      similarityWarning: '',
-      similaritySuggestion: '',
+      validationResult: null,
       loadingSteps: [
         'Validando configuración',
         'Preparando datos',
         'Enviando al dispositivo',
         'Esperando confirmación'
       ],
-      currentLoadingStep: 0
+      currentLoadingStep: 0,
+      lastRequestId: null,
+      retryInfo: null,
+      showLogs: false,
+      logs: ''
     }
   },
   computed: {
@@ -153,32 +181,39 @@ export default {
   },
   mounted() {
     this.checkSerialStatus()
+    // Actualizar logs automáticamente cada 10 segundos si están visibles
+    this.logsInterval = setInterval(() => {
+      if (this.showLogs) {
+        this.refreshLogs()
+      }
+    }, 10000)
+  },
+  beforeUnmount() {
+    if (this.logsInterval) {
+      clearInterval(this.logsInterval)
+    }
   },
   methods: {
     checkSpriteSimilarity() {
       // No validar si alguno está vacío
       if (isSpriteEmpty(this.config.character) || isSpriteEmpty(this.config.obstacle)) {
-        this.similarityWarning = ''
-        this.similaritySuggestion = ''
+        this.validationResult = null
         return
       }
 
-      const validation = validateSpriteDifference(this.config.character, this.config.obstacle)
-      
-      if (!validation.valid) {
-        this.similarityWarning = validation.message
-        this.similaritySuggestion = 'Intenta cambiar la forma del obstáculo o personaje para que sean más distinguibles visualmente.'
-      } else {
-        this.similarityWarning = ''
-        this.similaritySuggestion = ''
-      }
+      this.validationResult = validateSpriteDifference(this.config.character, this.config.obstacle)
+    },
+
+    dismissSuggestions() {
+      // Opcionalmente ocultar sugerencias temporalmente
+      this.validationResult = null
     },
 
     async checkSerialStatus() {
       try {
         const response = await fetch('http://localhost:5000/api/health')
         const data = await response.json()
-        this.serialConnected = data.status === 'ok'
+        this.serialConnected = data.serial_connected || false
       } catch (error) {
         console.error('Error checking serial status:', error)
         this.serialConnected = false
@@ -188,16 +223,46 @@ export default {
     async reconnectSerial() {
       try {
         this.showMessage('Intentando reconectar con el dispositivo...', 'info')
-        await this.checkSerialStatus()
+        const response = await fetch('http://localhost:5000/api/serial/reconnect', {
+          method: 'POST'
+        })
+        const data = await response.json()
         
-        if (this.serialConnected) {
+        if (data.success) {
+          this.serialConnected = true
           this.showMessage('Conexión restablecida correctamente', 'success')
         } else {
+          this.serialConnected = false
           this.showMessage('No se pudo conectar. Verifica que el cable USB esté conectado y el dispositivo esté encendido.', 'error')
         }
       } catch (error) {
         console.error('Error reconnecting:', error)
         this.showMessage('Error al intentar reconectar. Por favor, verifica la conexión física.', 'error')
+      }
+    },
+
+    async toggleLogs() {
+      this.showLogs = !this.showLogs
+      if (this.showLogs) {
+        await this.refreshLogs()
+      }
+    },
+
+    async refreshLogs() {
+      try {
+        const response = await fetch('http://localhost:5000/api/logs/recent')
+        const data = await response.json()
+        this.logs = data.logs
+        
+        // Auto-scroll al final
+        this.$nextTick(() => {
+          if (this.$refs.logsContent) {
+            this.$refs.logsContent.scrollTop = this.$refs.logsContent.scrollHeight
+          }
+        })
+      } catch (error) {
+        console.error('Error fetching logs:', error)
+        this.logs = 'Error al cargar logs'
       }
     },
 
@@ -208,6 +273,8 @@ export default {
 
       this.isSending = true
       this.responseMessage = ''
+      this.retryInfo = null
+      this.lastRequestId = null
       this.currentLoadingStep = 0
 
       try {
@@ -236,8 +303,14 @@ export default {
         await this.delay(300)
 
         if (response.ok) {
+          this.lastRequestId = data.request_id
           this.showMessage('Configuración cargada correctamente en el dispositivo', 'success')
           console.log('Respuesta del PIC:', data)
+          
+          // Actualizar logs si están visibles
+          if (this.showLogs) {
+            await this.refreshLogs()
+          }
         } else {
           this.handleErrorResponse(data, response.status)
         }
@@ -255,13 +328,21 @@ export default {
     },
 
     handleErrorResponse(data, status) {
+      this.lastRequestId = data.request_id
+      
+      if (data.retry_info) {
+        this.retryInfo = data.retry_info
+      }
+      
       if (status === 400) {
         this.showMessage(`Datos inválidos: ${data.error || data.message}`, 'error')
       } else if (status === 500) {
         if (data.error && data.error.includes('serial')) {
           this.showMessage('El dispositivo no respondió. Verifica que el PIC esté conectado y encendido.', 'error')
         } else if (data.error && data.error.includes('timeout')) {
-          this.showMessage('El dispositivo tardó demasiado en responder. Intenta enviar la configuración nuevamente.', 'error')
+          this.showMessage('El dispositivo tardó demasiado en responder. Se realizaron varios intentos automáticamente.', 'error')
+        } else if (data.error && data.error.includes('intentos')) {
+          this.showMessage(`Error de comunicación: ${data.error}`, 'error')
         } else {
           this.showMessage(`Error del dispositivo: ${data.error || data.message}`, 'error')
         }
@@ -312,6 +393,7 @@ export default {
       if (type !== 'error') {
         setTimeout(() => {
           this.responseMessage = ''
+          this.retryInfo = null
         }, 8000)
       }
     }
@@ -359,8 +441,7 @@ h1 {
   color: #28a745;
 }
 
-.btn-refresh, .btn-reconnect {
-  margin-left: auto;
+.btn-refresh, .btn-reconnect, .btn-logs {
   padding: 0.25rem 0.75rem;
   border: none;
   border-radius: 4px;
@@ -368,11 +449,93 @@ h1 {
   background: #007bff;
   color: white;
   font-size: 0.9rem;
-  transition: background 0.2s;
+  transition: all 0.2s;
 }
 
-.btn-refresh:hover, .btn-reconnect:hover {
+.btn-logs {
+  margin-left: auto;
+}
+
+.btn-logs.active {
   background: #0056b3;
+  font-weight: 600;
+}
+
+.btn-refresh:hover, .btn-reconnect:hover, .btn-logs:hover {
+  background: #0056b3;
+}
+
+.slide-enter-active, .slide-leave-active {
+  transition: all 0.3s ease;
+}
+
+.slide-enter-from {
+  opacity: 0;
+  max-height: 0;
+}
+
+.slide-leave-to {
+  opacity: 0;
+  max-height: 0;
+}
+
+.logs-panel {
+  background: #1e1e1e;
+  border: 2px solid #007bff;
+  border-radius: 8px;
+  margin-bottom: 2rem;
+  overflow: hidden;
+}
+
+.logs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: #007bff;
+  color: white;
+}
+
+.logs-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.btn-refresh-logs {
+  padding: 0.4rem 0.8rem;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-refresh-logs:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.logs-content {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 1rem;
+  background: #1e1e1e;
+}
+
+.logs-content pre {
+  margin: 0;
+  color: #d4d4d4;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.no-logs {
+  color: #999;
+  text-align: center;
+  margin: 2rem 0;
 }
 
 .editors-container {
@@ -380,27 +543,6 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 2rem;
   margin-bottom: 2rem;
-}
-
-.warning-box {
-  background: #fff3cd;
-  border: 2px solid #ffc107;
-  border-radius: 8px;
-  padding: 1rem;
-  margin-bottom: 2rem;
-  color: #856404;
-}
-
-.warning-box strong {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-size: 1.05rem;
-}
-
-.suggestion {
-  margin-top: 0.5rem;
-  font-style: italic;
-  color: #6c5400;
 }
 
 .send-section {
@@ -443,6 +585,13 @@ h1 {
   font-weight: 500;
 }
 
+.request-id {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: monospace;
+}
+
 .response-message {
   display: flex;
   align-items: flex-start;
@@ -482,6 +631,13 @@ h1 {
 
 .message-content p {
   margin: 0;
+}
+
+.retry-info {
+  display: block;
+  margin-top: 0.5rem;
+  font-style: italic;
+  opacity: 0.9;
 }
 
 .response-message.success {
