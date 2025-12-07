@@ -62,6 +62,14 @@
       </div>
     </div>
 
+    <!-- Telemetry Display -->
+    <TelemetryDisplay 
+      :show="showTelemetry"
+      :telemetry="telemetryData"
+      @close="closeTelemetry"
+      @play-again="handlePlayAgain"
+    />
+
     <!-- Loading overlay -->
     <LoadingSpinner 
       :show="isSending"
@@ -69,6 +77,16 @@
       :steps="loadingSteps"
       :current-step="currentLoadingStep"
     />
+
+    <!-- Botones de prueba temporal -->
+    <div style="text-align: center; margin-top: 1rem;">
+      <button @click="testTelemetry('victory')" class="btn-test">
+        🧪 Test Victoria
+      </button>
+      <button @click="testTelemetry('defeat')" class="btn-test">
+        🧪 Test Derrota
+      </button>
+    </div>
   </div>
 </template>
 
@@ -76,6 +94,7 @@
 import SpriteEditor from './SpriteEditor.vue'
 import GoalConfig from './GoalConfig.vue'
 import LoadingSpinner from './LoadingSpinner.vue'
+import TelemetryDisplay from './TelemetryDisplay.vue'
 import { validateSpriteDifference, isSpriteEmpty } from '../utils/spriteValidation.js'
 
 export default {
@@ -83,7 +102,8 @@ export default {
   components: {
     SpriteEditor,
     GoalConfig,
-    LoadingSpinner
+    LoadingSpinner,
+    TelemetryDisplay
   },
   data() {
     return {
@@ -106,7 +126,15 @@ export default {
         'Esperando confirmación'
       ],
       currentLoadingStep: 0,
-      watchdogActive: false
+      watchdogActive: false,
+      showTelemetry: false,
+      telemetryData: {
+        obstaclesAvoided: 0,
+        survivalTime: 0,
+        result: 'victory',
+        goalType: null,
+        goalValue: 0
+      }
     }
   },
   computed: {
@@ -177,17 +205,17 @@ export default {
     },
 
     async checkSerialStatus() {
-    try {
-      const response = await fetch('http://localhost:5000/api/health')
-      const data = await response.json()
-      this.serialConnected = data.status === 'ok'
-      this.watchdogActive = data.watchdog_active || false
-    } catch (error) {
-      console.error('Error checking serial status:', error)
-      this.serialConnected = false
-      this.watchdogActive = false
-    }
-  },
+      try {
+        const response = await fetch('http://localhost:5000/api/health')
+        const data = await response.json()
+        this.serialConnected = data.status === 'ok'
+        this.watchdogActive = data.watchdog_active || false
+      } catch (error) {
+        console.error('Error checking serial status:', error)
+        this.serialConnected = false
+        this.watchdogActive = false
+      }
+    },
 
     async reconnectSerial() {
       try {
@@ -318,6 +346,36 @@ export default {
           this.responseMessage = ''
         }, 8000)
       }
+    },
+
+    showTelemetryResults(data) {
+      this.telemetryData = {
+        obstaclesAvoided: data.obstacles_avoided || 0,
+        survivalTime: data.survival_time || 0,
+        result: data.result || 'defeat',
+        goalType: this.config.goalType,
+        goalValue: this.config.goalValue
+      }
+      this.showTelemetry = true
+    },
+
+    closeTelemetry() {
+      this.showTelemetry = false
+    },
+
+    handlePlayAgain() {
+      this.showTelemetry = false
+      this.showMessage('Reinicia el juego en el dispositivo para jugar de nuevo', 'info')
+    },
+
+    // Método temporal para probar el modal
+    testTelemetry(result = 'victory') {
+      const mockData = {
+        obstacles_avoided: Math.floor(Math.random() * 20) + 5,
+        survival_time: Math.floor(Math.random() * 120) + 30,
+        result: result
+      }
+      this.showTelemetryResults(mockData)
     }
   }
 }
@@ -537,5 +595,20 @@ h1 {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
+}
+
+.btn-test {
+  padding: 0.5rem 1rem;
+  margin: 0 0.5rem;
+  background: #9c27b0;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.btn-test:hover {
+  background: #7b1fa2;
 }
 </style>
