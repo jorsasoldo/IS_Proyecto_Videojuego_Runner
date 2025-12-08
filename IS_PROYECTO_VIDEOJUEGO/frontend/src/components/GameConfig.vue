@@ -134,7 +134,9 @@ export default {
         result: 'victory',
         goalType: null,
         goalValue: 0
-      }
+      },
+      pollingInterval: null,
+      isPolling: false
     }
   },
   computed: {
@@ -184,9 +186,11 @@ export default {
   mounted() {
     this.checkSerialStatus()
   },
+  beforeUnmount() {
+    this.stopTelemetryPolling()
+  },
   methods: {
     checkSpriteSimilarity() {
-      // No validar si alguno está vacío
       if (isSpriteEmpty(this.config.character) || isSpriteEmpty(this.config.obstacle)) {
         this.similarityWarning = ''
         this.similaritySuggestion = ''
@@ -243,15 +247,12 @@ export default {
       this.currentLoadingStep = 0
 
       try {
-        // Paso 1: Validando
         this.currentLoadingStep = 0
         await this.delay(300)
 
-        // Paso 2: Preparando datos
         this.currentLoadingStep = 1
         await this.delay(300)
 
-        // Paso 3: Enviando
         this.currentLoadingStep = 2
         
         const response = await fetch('http://localhost:5000/api/send_config', {
@@ -262,7 +263,6 @@ export default {
           body: JSON.stringify(this.config)
         })
 
-        // Paso 4: Esperando confirmación
         this.currentLoadingStep = 3
         const data = await response.json()
         await this.delay(300)
@@ -270,6 +270,8 @@ export default {
         if (response.ok) {
           this.showMessage('Configuración cargada correctamente en el dispositivo', 'success')
           console.log('Respuesta del PIC:', data)
+          
+          this.startTelemetryPolling()
         } else {
           this.handleErrorResponse(data, response.status)
         }
@@ -361,6 +363,7 @@ export default {
 
     closeTelemetry() {
       this.showTelemetry = false
+      this.stopTelemetryPolling()
     },
 
     handlePlayAgain() {
@@ -368,14 +371,71 @@ export default {
       this.showMessage('Reinicia el juego en el dispositivo para jugar de nuevo', 'info')
     },
 
-    // Método temporal para probar el modal
-    testTelemetry(result = 'victory') {
-      const mockData = {
-        obstacles_avoided: Math.floor(Math.random() * 20) + 5,
-        survival_time: Math.floor(Math.random() * 120) + 30,
-        result: result
+    startTelemetryPolling() {
+      this.clearTelemetry()
+      
+      this.isPolling = true
+      this.pollingInterval = setInterval(async () => {
+        await this.checkForTelemetry()
+      }, 2000)
+      
+      console.log('[POLLING] Iniciado - Esperando telemetría del PIC')
+    },
+
+    stopTelemetryPolling() {
+      if (this.pollingInterval) {
+        clearInterval(this.pollingInterval)
+        this.pollingInterval = null
+        this.isPolling = false
+        console.log('[POLLING] Detenido')
       }
-      this.showTelemetryResults(mockData)
+    },
+
+    async checkForTelemetry() {
+      try {
+        const response = await fetch('http://localhost:5000/api/telemetry/latest')
+        const data = await response.json()
+        
+        if (data.status === 'ok' && data.data) {
+          console.log('[POLLING] Telemetría recibida:', data.data)
+          this.stopTelemetryPolling()
+          this.showTelemetryResults(data.data)
+        }
+      } catch (error) {
+        console.error('[POLLING] Error:', error)
+      }
+    },
+
+    async clearTelemetry() {
+      try {
+        await fetch('http://localhost:5000/api/telemetry/clear', {
+          method: 'POST'
+        })
+      } catch (error) {
+        console.error('[TELEMETRY] Error al limpiar:', error)
+      }
+    },
+
+    async testTelemetry(result = 'victory') {
+      const mockData = {
+        obstacles: Math.floor(Math.random() * 20) + 5,
+        time: Math.floor(Math.random() * 120) + 30,
+        result: result === 'victory' ? 'win' : 'lose'
+      }
+      
+      try {
+        await fetch('http://localhost:5000/api/telemetry', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(mockData)
+        })
+        
+        this.startTelemetryPolling()
+      } catch (error) {
+        console.error('Error en test:', error)
+      }
     }
   }
 }
