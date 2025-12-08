@@ -19,6 +19,9 @@ connection_status = {
     'reconnection_attempts': 0
 }
 
+# Variable global para telemetría
+latest_telemetry = None
+
 def check_connection():
     """Verifica si la conexión serial sigue activa"""
     global ser
@@ -293,6 +296,96 @@ def watchdog_status():
             'disconnections': connection_status['disconnection_count'],
             'reconnection_attempts': connection_status['reconnection_attempts']
         }
+    }), 200
+
+@api_bp.route('/telemetry', methods=['POST'])
+def receive_telemetry():
+    """
+    Recibe telemetría del PIC al finalizar una partida
+    
+    Espera JSON:
+    {
+        "obstacles": 15,
+        "time": 45,
+        "result": "win" o "lose"
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        # Validar campos requeridos
+        required_fields = ['obstacles', 'time', 'result']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing field: {field}'}), 400
+        
+        # Validar tipos de datos
+        if not isinstance(data['obstacles'], int) or data['obstacles'] < 0:
+            return jsonify({'error': 'obstacles debe ser un entero no negativo'}), 400
+        
+        if not isinstance(data['time'], int) or data['time'] < 0:
+            return jsonify({'error': 'time debe ser un entero no negativo'}), 400
+        
+        if data['result'] not in ['win', 'lose', 'victory', 'defeat']:
+            return jsonify({'error': 'result debe ser "win", "lose", "victory" o "defeat"'}), 400
+        
+        normalized_result = 'victory' if data['result'] in ['win', 'victory'] else 'defeat'
+        
+        # Guardar telemetría en variable global para que el frontend la pueda consultar
+        global latest_telemetry
+        latest_telemetry = {
+            'obstacles_avoided': data['obstacles'],
+            'survival_time': data['time'],
+            'result': normalized_result,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        print(f"[TELEMETRY] Recibida: {latest_telemetry}")
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Telemetría recibida correctamente'
+        }), 200
+        
+    except Exception as e:
+        print(f"[TELEMETRY ERROR] {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/telemetry/latest', methods=['GET'])
+def get_latest_telemetry():
+    """
+    Obtiene la última telemetría recibida
+    El frontend puede hacer polling a este endpoint
+    """
+    global latest_telemetry
+    
+    if latest_telemetry is None:
+        return jsonify({
+            'status': 'no_data',
+            'message': 'No hay telemetría disponible'
+        }), 200
+    
+    return jsonify({
+        'status': 'ok',
+        'data': latest_telemetry
+    }), 200
+
+
+@api_bp.route('/telemetry/clear', methods=['POST'])
+def clear_telemetry():
+    """
+    Limpia la telemetría almacenada
+    """
+    global latest_telemetry
+    latest_telemetry = None
+    
+    return jsonify({
+        'status': 'success',
+        'message': 'Telemetría limpiada'
     }), 200
 
 @api_bp.route('/health', methods=['GET'])
