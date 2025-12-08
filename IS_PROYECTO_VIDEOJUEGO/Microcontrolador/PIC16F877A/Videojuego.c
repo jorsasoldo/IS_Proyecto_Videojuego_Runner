@@ -45,6 +45,16 @@ typedef struct {
 
 LevelConfig nivel;
 
+// ============ ESTRUCTURA DE TELEMETRÍA ============
+typedef struct {
+    unsigned int obstaclesEsquivados;  // Total de obstáculos esquivados
+    unsigned int tiempoTranscurrido;   // Tiempo en segundos (aproximado)
+    unsigned char resultado;           // 0=lose, 1=win
+    unsigned char partidaActiva;       // Flag de partida en curso
+} GameTelemetry;
+
+GameTelemetry telemetria;
+
 // ============ VARIABLES DEL JUEGO ============
 // Buffer de pantalla
 unsigned char displayBuffer[FILAS][COLUMNAS];
@@ -59,6 +69,10 @@ unsigned char Cont_Obstaculo = 1;        // Contador de obstáculos
 unsigned char puntuacion = 0;            // Puntuación actual
 unsigned char semilla = 0;               // Semilla para aleatorios
 unsigned char gameInitialized = 0;       // Flag de inicialización
+
+// Variables para tiempo
+volatile unsigned int timerTicks = 0;    // Contador de ticks del timer
+unsigned int segundosJuego = 0;          // Segundos transcurridos
 
 // Buffer temporal multiuso
 #define TEMP_BUFFER_SIZE 5
@@ -94,7 +108,12 @@ void generar_obstaculo(void);
 void actualizar_score(void);
 unsigned char random_number(unsigned char max);
 void leer_botones(void);
-void detectar_colision(void);
+unsigned char detectar_colision(void);
+void evaluar_metas(void);
+void inicializar_telemetria(void);
+void enviar_telemetria(void);
+void Timer1_Init(void);
+void actualizar_tiempo(void);
 
 // Parseo JSON
 void JSON_Parse(void);
@@ -144,10 +163,10 @@ void LCD_Init(void) {
     __delay_ms(2);
 }
 
-// ============ ESCRITURA EN CGRAM - PERSONAJE (0x00) ============
+// ============ ESCRITURA EN CGRAM ============
 unsigned char LCD_CargarPersonaje(void) {
     unsigned char i;
-    unsigned char addr = 0x40;  // CGRAM posición 0
+    unsigned char addr = 0x40;
     
     COMANDO(addr);
     __delay_us(100);
@@ -157,17 +176,16 @@ unsigned char LCD_CargarPersonaje(void) {
         __delay_us(50);
     }
     
-    COMANDO(0x80);  // Regresar a DDRAM
+    COMANDO(0x80);
     __delay_us(100);
     
     nivel.characterLoaded = 1;
     return 1;
 }
 
-// ============ ESCRITURA EN CGRAM - OBSTÁCULO (0x01) ============
 unsigned char LCD_CargarObstaculo(void) {
     unsigned char i;
-    unsigned char addr = 0x40 | (1 << 3);  // CGRAM posición 1
+    unsigned char addr = 0x40 | (1 << 3);
     
     COMANDO(addr);
     __delay_us(100);
@@ -177,7 +195,7 @@ unsigned char LCD_CargarObstaculo(void) {
         __delay_us(50);
     }
     
-    COMANDO(0x80);  // Regresar a DDRAM
+    COMANDO(0x80);
     __delay_us(100);
     
     nivel.obstacleLoaded = 1;
@@ -233,7 +251,30 @@ void UART_Escr_String(const char *str) {
     }
 }
 
+// ============ TIMER1 PARA MEDICIÓN DE TIEMPO ============
+void Timer1_Init(void) {
+    T1CONbits.TMR1ON = 0;     // Timer1 OFF inicialmente
+    T1CONbits.TMR1CS = 0;     // Reloj interno (FOSC/4)
+    T1CONbits.T1CKPS0 = 1;    // Prescaler 1:8
+    T1CONbits.T1CKPS1 = 1;
+    TMR1 = 0;                 // Limpiar contador
+    PIE1bits.TMR1IE = 1;      // Habilitar interrupción Timer1
+    timerTicks = 0;
+    segundosJuego = 0;
+}
+
+void actualizar_tiempo(void) {
+    // Aproximación: cada 125000 ticks = 1 segundo con prescaler 1:8 a 4MHz
+    // (4MHz / 4 / 8) = 125kHz → 125000 ticks = 1 seg
+    if(timerTicks >= 125) {  // Ajustado para desbordamientos de Timer1
+        timerTicks = 0;
+        segundosJuego++;
+        telemetria.tiempoTranscurrido = segundosJuego;
+    }
+}
+
 void __interrupt() ISR(void) {
+    // Interrupción UART
     if(PIR1bits.RCIF) {
         if(RCSTAbits.OERR) {
             RCSTAbits.CREN = 0;
@@ -241,6 +282,13 @@ void __interrupt() ISR(void) {
         }
         uartBuffer[bufferWrite & BUFFER_MASK] = RCREG;
         bufferWrite++;
+    }
+    
+    // Interrupción Timer1 para tiempo
+    if(PIR1bits.TMR1IF) {
+        PIR1bits.TMR1IF = 0;
+        timerTicks++;
+        actualizar_tiempo();
     }
 }
 
@@ -270,7 +318,7 @@ void UART_LimpiaBuffer(void) {
     bufferRead = bufferWrite;
 }
 
-// ============ FUNCIONES DE CONVERSIÓN OPTIMIZADAS ============
+// ============ FUNCIONES DE CONVERSIÓN ============
 unsigned int strToUInt(unsigned char len) {
     unsigned int resultado = 0;
     unsigned char i;
@@ -298,7 +346,7 @@ unsigned char leerDigitos(void) {
     return idx;
 }
 
-// ============ PARSEO JSON OPTIMIZADO ============
+// ============ PARSEO JSON ============
 void JSON_Parse(void) {
     unsigned char c, i, len;
     unsigned int intentos = 0;
@@ -377,32 +425,20 @@ void JSON_Parse(void) {
     nivel.goalLoaded = 1;
 }
 
-// ============ CONFIRMACIÓN DE CARGA EXITOSA ============
+// ============ CONFIRMACIÓN DE CARGA ============
 void enviarConfirmacion(void) {
     UART_Escr_String("{\"status\":\"loaded\"");
     
     UART_Escr_String(",\"character\":\"");
-    if(nivel.characterLoaded) {
-        UART_Escr_String("ok");
-    } else {
-        UART_Escr_String("error");
-    }
+    UART_Escr_String(nivel.characterLoaded ? "ok" : "error");
     UART_Escr_String("\"");
     
     UART_Escr_String(",\"obstacle\":\"");
-    if(nivel.obstacleLoaded) {
-        UART_Escr_String("ok");
-    } else {
-        UART_Escr_String("error");
-    }
+    UART_Escr_String(nivel.obstacleLoaded ? "ok" : "error");
     UART_Escr_String("\"");
     
     UART_Escr_String(",\"goal\":\"");
-    if(nivel.goalLoaded) {
-        UART_Escr_String("ok");
-    } else {
-        UART_Escr_String("error");
-    }
+    UART_Escr_String(nivel.goalLoaded ? "ok" : "error");
     UART_Escr_String("\"");
     
     UART_Escr_String(",\"goalType\":");
@@ -440,6 +476,96 @@ void enviarConfirmacion(void) {
     }
     
     UART_Escr_String("}\r\n");
+}
+
+// ============ TELEMETRÍA DEL JUEGO ============
+void inicializar_telemetria(void) {
+    telemetria.obstaclesEsquivados = 0;
+    telemetria.tiempoTranscurrido = 0;
+    telemetria.resultado = 0;  // 0 = lose por defecto
+    telemetria.partidaActiva = 1;
+    
+    // Reiniciar tiempo
+    segundosJuego = 0;
+    timerTicks = 0;
+    TMR1 = 0;
+    T1CONbits.TMR1ON = 1;  // Activar Timer1
+}
+
+void enviar_telemetria(void) {
+    unsigned char buffer[6];
+    unsigned char idx, temp;
+    unsigned int val;
+    
+    // Construir JSON de telemetría
+    UART_Escr_String("{\"obstacles\":");
+    
+    // Enviar obstáculos esquivados
+    val = telemetria.obstaclesEsquivados;
+    idx = 0;
+    if(val == 0) {
+        buffer[idx++] = '0';
+    } else {
+        unsigned char start = idx;
+        while(val > 0) {
+            buffer[idx++] = (val % 10) + '0';
+            val /= 10;
+        }
+        unsigned char end = idx - 1;
+        while(start < end) {
+            temp = buffer[start];
+            buffer[start] = buffer[end];
+            buffer[end] = temp;
+            start++;
+            end--;
+        }
+    }
+    buffer[idx] = '\0';
+    for(temp = 0; temp < idx; temp++) {
+        UART_Escr(buffer[temp]);
+    }
+    
+    UART_Escr_String(",\"time\":");
+    
+    // Enviar tiempo transcurrido
+    val = telemetria.tiempoTranscurrido;
+    idx = 0;
+    if(val == 0) {
+        buffer[idx++] = '0';
+    } else {
+        unsigned char start = idx;
+        while(val > 0) {
+            buffer[idx++] = (val % 10) + '0';
+            val /= 10;
+        }
+        unsigned char end = idx - 1;
+        while(start < end) {
+            temp = buffer[start];
+            buffer[start] = buffer[end];
+            buffer[end] = temp;
+            start++;
+            end--;
+        }
+    }
+    buffer[idx] = '\0';
+    for(temp = 0; temp < idx; temp++) {
+        UART_Escr(buffer[temp]);
+    }
+    
+    UART_Escr_String(",\"result\":\"");
+    
+    // Enviar resultado
+    if(telemetria.resultado == 1) {
+        UART_Escr_String("win");
+    } else {
+        UART_Escr_String("lose");
+    }
+    
+    UART_Escr_String("\"}\r\n");
+    
+    // Detener Timer1
+    T1CONbits.TMR1ON = 0;
+    telemetria.partidaActiva = 0;
 }
 
 void limpiarRecursos(void) {
@@ -494,142 +620,109 @@ void inicializarNivel(void) {
 
 // ============ FUNCIONES DEL JUEGO ============
 
-// Inicializa el juego con sprites custom cargados
 void inicializar_juego(void) {
     unsigned char fil, col;
     
-    // Limpiar LCD
     COMANDO(0x01);
     __delay_ms(2);
     
-    // Cargar sprites custom en CGRAM
     LCD_CargarTodosSprites();
     
-    // Limpiar buffer de pantalla
     for(fil = 0; fil < FILAS; fil++) {
         for(col = 0; col < COLUMNAS; col++) {
             displayBuffer[fil][col] = ' ';
         }
     }
     
-    // Inicializar variables del juego
     Fila_Personaje = 1;
     Ult_Fila_Personaje = 1;
     Activo = 1;
     Cont_Obstaculo = 0;
     puntuacion = 0;
     
-    // Colocar personaje en posición inicial
     displayBuffer[Fila_Personaje][Columna_Personaje] = PERSONAJE;
     
-    // Actualizar pantalla
     actualizar_pantalla();
     actualizar_score();
+    
+    // Inicializar telemetría
+    inicializar_telemetria();
     
     gameInitialized = 1;
     
     UART_Escr_String("Juego inicializado\r\n");
 }
 
-// Reinicia el juego manteniendo los sprites
 void reiniciar_juego(void) {
     unsigned char fil, col;
     
-    // Limpiar buffer de pantalla
     for(fil = 0; fil < FILAS; fil++) {
         for(col = 0; col < COLUMNAS; col++) {
             displayBuffer[fil][col] = ' ';
         }
     }
     
-    // Reiniciar variables
     Fila_Personaje = 1;
     Ult_Fila_Personaje = 1;
     Activo = 1;
     Cont_Obstaculo = 0;
     puntuacion = 0;
     
-    // Colocar personaje
     displayBuffer[Fila_Personaje][Columna_Personaje] = PERSONAJE;
     
     actualizar_pantalla();
     actualizar_score();
+    
+    // Reiniciar telemetría
+    inicializar_telemetria();
 }
 
-// Lee los botones y actualiza posición del personaje
 void leer_botones(void) {
-    // Botón SALTA - mueve a fila superior
     if(SALTA == 1 && Fila_Personaje != 0) {
-        // Borrar posición anterior
         displayBuffer[Ult_Fila_Personaje][Columna_Personaje] = ' ';
-        
-        // Actualizar fila
         Ult_Fila_Personaje = Fila_Personaje;
         Fila_Personaje = 0;
-        
-        // Colocar en nueva posición
         displayBuffer[Fila_Personaje][Columna_Personaje] = PERSONAJE;
-        
-        // Antirebote
         __delay_ms(20);
     }
-    
-    // Botón AGACHA - mueve a fila inferior
     else if(AGACHA == 1 && Fila_Personaje != 1) {
-        // Borrar posición anterior
         displayBuffer[Ult_Fila_Personaje][Columna_Personaje] = ' ';
-        
-        // Actualizar fila
         Ult_Fila_Personaje = Fila_Personaje;
         Fila_Personaje = 1;
-        
-        // Colocar en nueva posición
         displayBuffer[Fila_Personaje][Columna_Personaje] = PERSONAJE;
-        
-        // Antirebote
         __delay_ms(20);
     }
 }
 
-// Genera obstáculo aleatorio
 void generar_obstaculo(void) {
-    // Solo genera si no hay obstáculos cerca del borde derecho
     if(displayBuffer[0][COLUMNAS - 4] == ' ' && displayBuffer[1][COLUMNAS - 4] == ' ') {
         unsigned char fila_obstaculo = random_number(2);
         displayBuffer[fila_obstaculo][COLUMNAS - 4] = OBSTACULO;
     }
 }
 
-// Desplaza el mundo a la izquierda
 void desplazar_mundo(void) {
     unsigned char fil, col;
     
     for(fil = 0; fil < FILAS; fil++) {
-        // Desplaza hasta columna 12 (reserva espacio para score)
         for(col = 0; col < COLUMNAS - 4; col++) {
             displayBuffer[fil][col] = displayBuffer[fil][col + 1];
         }
-        
-        // Limpia la última columna
         displayBuffer[fil][COLUMNAS - 4] = ' ';
     }
 }
 
-// Actualiza la pantalla desde el buffer
 void actualizar_pantalla(void) {
     unsigned char fil, col;
     
     for(fil = 0; fil < FILAS; fil++) {
         LCD_Posicion(0, fil);
-        
-        // Actualiza hasta columna 13 (deja espacio para score)
         for(col = 0; col < COLUMNAS - 3; col++) {
             DIGITO(displayBuffer[fil][col]);
         }
     }
 }
 
-// Actualiza el score en pantalla
 void actualizar_score(void) {
     unsigned char decenas = '0' + (puntuacion / 10);
     unsigned char unidades = '0' + (puntuacion % 10);
@@ -639,35 +732,89 @@ void actualizar_score(void) {
     DIGITO(unidades);
 }
 
-// Genera número aleatorio
 unsigned char random_number(unsigned char max) {
     semilla += TMR0;
     semilla = (semilla * 13 + 17) % 251;
     return semilla % max;
 }
 
-// Detecta colisión
-void detectar_colision(void) {
+// ============ DETECCIÓN DE COLISIONES ============
+unsigned char detectar_colision(void) {
+    // Verifica si el personaje está en la misma posición que un obstáculo
     if(displayBuffer[Fila_Personaje][Columna_Personaje] == OBSTACULO) {
-        Activo = 0;
-        
-        COMANDO(0x01);
-        __delay_ms(2);
-        
-        LCD_Posicion(0, 0);
-        LCD_Escr_String("GAME OVER!");
-        LCD_Posicion(0, 1);
-        LCD_Escr_String("Score: ");
-        
-        unsigned char decenas = '0' + (puntuacion / 10);
-        unsigned char unidades = '0' + (puntuacion % 10);
-        DIGITO(decenas);
-        DIGITO(unidades);
-        
-        __delay_ms(3000);
-        
-        // Reiniciar
-        reiniciar_juego();
+        return 1;  // Colisión detectada
+    }
+    return 0;  // Sin colisión
+}
+
+// ============ EVALUACIÓN DE METAS ============
+void evaluar_metas(void) {
+    // Meta tipo 1: Obstáculos esquivados
+    if(nivel.goalType == 1) {
+        if(telemetria.obstaclesEsquivados >= nivel.goalValue) {
+            // Victoria por obstáculos
+            Activo = 0;
+            telemetria.resultado = 1;  // Win
+            
+            COMANDO(0x01);
+            __delay_ms(2);
+            
+            LCD_Posicion(0, 0);
+            LCD_Escr_String("GANASTE!");
+            LCD_Posicion(0, 1);
+            LCD_Escr_String("Obstac: ");
+            
+            unsigned char dec = '0' + (telemetria.obstaclesEsquivados / 10);
+            unsigned char uni = '0' + (telemetria.obstaclesEsquivados % 10);
+            DIGITO(dec);
+            DIGITO(uni);
+            
+            __delay_ms(3000);
+            
+            // Enviar telemetría
+            enviar_telemetria();
+            
+            gameInitialized = 0;
+            
+            LCD_Posicion(0, 0);
+            LCD_Escr_String("Esperando");
+            LCD_Posicion(0, 1);
+            LCD_Escr_String("config...");
+        }
+    }
+    // Meta tipo 0: Tiempo sobrevivido
+    else if(nivel.goalType == 0) {
+        if(telemetria.tiempoTranscurrido >= nivel.goalValue) {
+            // Victoria por tiempo
+            Activo = 0;
+            telemetria.resultado = 1;  // Win
+            
+            COMANDO(0x01);
+            __delay_ms(2);
+            
+            LCD_Posicion(0, 0);
+            LCD_Escr_String("GANASTE!");
+            LCD_Posicion(0, 1);
+            LCD_Escr_String("Tiempo: ");
+            
+            unsigned char dec = '0' + (telemetria.tiempoTranscurrido / 10);
+            unsigned char uni = '0' + (telemetria.tiempoTranscurrido % 10);
+            DIGITO(dec);
+            DIGITO(uni);
+            DIGITO('s');
+            
+            __delay_ms(3000);
+            
+            // Enviar telemetría
+            enviar_telemetria();
+            
+            gameInitialized = 0;
+            
+            LCD_Posicion(0, 0);
+            LCD_Escr_String("Esperando");
+            LCD_Posicion(0, 1);
+            LCD_Escr_String("config...");
+        }
     }
 }
 
@@ -678,13 +825,13 @@ void main(void) {
     // Configuración de puertos
     TRISB = 0x00;
     TRISC = 0x00;
-    TRISD = 0b00000011;  // RD0 y RD1 como entradas (botones)
+    TRISD = 0b00000011;
     
     PORTB = 0x00;
     PORTC = 0x00;
     PORTD = 0x00;
     
-    // Configurar Timer0 para números aleatorios
+    // Configurar Timer0 para aleatorios
     OPTION_REGbits.T0CS = 1;
     OPTION_REGbits.PSA = 0;
     OPTION_REGbits.PS = 0b111;
@@ -695,16 +842,15 @@ void main(void) {
     // Inicializar subsistemas
     UART_Init();
     LCD_Init();
+    Timer1_Init();
     inicializarNivel();
     limpiarRecursos();
     
-    // Inicializar semilla
     TMR0 = 0;
     semilla = TMR0;
     
     UART_Escr_String("Sistema listo\r\n");
     
-    // Mensaje de espera
     LCD_Posicion(0, 0);
     LCD_Escr_String("Esperando");
     LCD_Posicion(0, 1);
@@ -719,15 +865,10 @@ void main(void) {
             JSON_Parse();
             
             if(validarConfiguracion()) {
-                // Cargar sprites y preparar juego
                 LCD_CargarTodosSprites();
-                
                 __delay_ms(100);
                 enviarConfirmacion();
-                
-                // Inicializar juego
                 inicializar_juego();
-                
                 limpiarRecursos();
             } else {
                 UART_Escr_String("{\"status\":\"error\",\"message\":\"invalid config\"}\r\n");
@@ -744,7 +885,7 @@ void main(void) {
             // Actualizar pantalla
             actualizar_pantalla();
             
-            // Generar obstáculos periódicamente
+            // Generar obstáculos
             if(++Cont_Obstaculo >= 4) {
                 Cont_Obstaculo = 0;
                 generar_obstaculo();
@@ -763,32 +904,28 @@ void main(void) {
                 Ult_Puntuacion = puntuacion;
             }
             
-            // Detectar colisión
-            detectar_colision();
-            
-            // Incrementar puntuación cuando pasa obstáculo
-            if(displayBuffer[1][0] == OBSTACULO || displayBuffer[0][0] == OBSTACULO) {
-                puntuacion++;
-            }
-            
-            // Verificar si alcanzó la meta
-            if(nivel.goalType == 1 && puntuacion >= nivel.goalValue) {
+            // ===== DETECCIÓN DE COLISIONES =====
+            if(detectar_colision()) {
                 Activo = 0;
+                telemetria.resultado = 0;  // Lose
                 
                 COMANDO(0x01);
                 __delay_ms(2);
                 
                 LCD_Posicion(0, 0);
-                LCD_Escr_String("GANASTE!");
+                LCD_Escr_String("GAME OVER!");
                 LCD_Posicion(0, 1);
-                LCD_Escr_String("Score: ");
+                LCD_Escr_String("Obst: ");
                 
-                unsigned char decenas = '0' + (puntuacion / 10);
-                unsigned char unidades = '0' + (puntuacion % 10);
-                DIGITO(decenas);
-                DIGITO(unidades);
+                unsigned char dec = '0' + (telemetria.obstaclesEsquivados / 10);
+                unsigned char uni = '0' + (telemetria.obstaclesEsquivados % 10);
+                DIGITO(dec);
+                DIGITO(uni);
                 
                 __delay_ms(3000);
+                
+                // Enviar telemetría de pérdida
+                enviar_telemetria();
                 
                 gameInitialized = 0;
                 
@@ -798,6 +935,17 @@ void main(void) {
                 LCD_Escr_String("config...");
             }
             
+            // ===== INCREMENTAR OBSTÁCULOS ESQUIVADOS =====
+            // Cuando un obstáculo pasa por la columna 0 (donde está el personaje)
+            // y no hubo colisión, se cuenta como esquivado
+            if(displayBuffer[1][0] == OBSTACULO || displayBuffer[0][0] == OBSTACULO) {
+                puntuacion++;
+                telemetria.obstaclesEsquivados++;
+            }
+            
+            // ===== EVALUACIÓN DE METAS =====
+            evaluar_metas();
+            
             // Velocidad del juego
             __delay_ms(150);
         }
@@ -805,7 +953,7 @@ void main(void) {
         // Pausa pequeña
         __delay_ms(10);
         
-        // Mantenimiento preventivo del buffer
+        // Mantenimiento preventivo
         static unsigned char contador = 0;
         if(++contador > 100) {
             contador = 0;
