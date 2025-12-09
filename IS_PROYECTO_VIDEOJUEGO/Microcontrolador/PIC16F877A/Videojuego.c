@@ -747,29 +747,125 @@ unsigned char detectar_colision(void) {
     return 0;  // Sin colisión
 }
 
+// ============ PANTALLA DE VICTORIA ============
+void mostrar_victoria(void) {
+    unsigned char i;
+    
+    // Limpiar LCD
+    COMANDO(0x01);
+    __delay_ms(2);
+    
+    // Línea 1: "YOU WIN!"
+    LCD_Posicion(4, 0);  // Centrado
+    LCD_Escr_String("YOU WIN!");
+    
+    // Línea 2: Estadísticas según tipo de meta
+    LCD_Posicion(0, 1);
+    if(nivel.goalType == 1) {
+        // Victoria por obstáculos
+        LCD_Escr_String("Obst:");
+        
+        // Convertir y mostrar obstáculos (hasta 999)
+        if(telemetria.obstaclesEsquivados >= 100) {
+            DIGITO('0' + (telemetria.obstaclesEsquivados / 100));
+        }
+        if(telemetria.obstaclesEsquivados >= 10) {
+            DIGITO('0' + ((telemetria.obstaclesEsquivados / 10) % 10));
+        }
+        DIGITO('0' + (telemetria.obstaclesEsquivados % 10));
+        
+        // Mostrar tiempo también
+        LCD_Escr_String(" T:");
+        if(telemetria.tiempoTranscurrido >= 10) {
+            DIGITO('0' + (telemetria.tiempoTranscurrido / 10));
+        }
+        DIGITO('0' + (telemetria.tiempoTranscurrido % 10));
+        DIGITO('s');
+    } else {
+        // Victoria por tiempo
+        LCD_Escr_String("Tiempo:");
+        
+        if(telemetria.tiempoTranscurrido >= 100) {
+            DIGITO('0' + (telemetria.tiempoTranscurrido / 100));
+        }
+        if(telemetria.tiempoTranscurrido >= 10) {
+            DIGITO('0' + ((telemetria.tiempoTranscurrido / 10) % 10));
+        }
+        DIGITO('0' + (telemetria.tiempoTranscurrido % 10));
+        DIGITO('s');
+    }
+    
+    // Efecto de parpadeo (3 veces)
+    for(i = 0; i < 3; i++) {
+        __delay_ms(500);
+        COMANDO(0x08);  // Display OFF
+        __delay_ms(300);
+        COMANDO(0x0C);  // Display ON
+    }
+    
+    __delay_ms(2000);
+}
+
+// ============ PANTALLA DE DERROTA ============
+void mostrar_derrota(void) {
+    unsigned char i;
+    
+    // Limpiar LCD
+    COMANDO(0x01);
+    __delay_ms(2);
+    
+    // Línea 1: "GAME OVER"
+    LCD_Posicion(3, 0);  // Centrado
+    LCD_Escr_String("GAME OVER");
+    
+    // Línea 2: Estadísticas
+    LCD_Posicion(0, 1);
+    LCD_Escr_String("O:");
+    
+    // Mostrar obstáculos esquivados
+    if(telemetria.obstaclesEsquivados >= 10) {
+        DIGITO('0' + (telemetria.obstaclesEsquivados / 10));
+    }
+    DIGITO('0' + (telemetria.obstaclesEsquivados % 10));
+    
+    // Mostrar tiempo
+    LCD_Escr_String(" T:");
+    if(telemetria.tiempoTranscurrido >= 10) {
+        DIGITO('0' + (telemetria.tiempoTranscurrido / 10));
+    }
+    DIGITO('0' + (telemetria.tiempoTranscurrido % 10));
+    DIGITO('s');
+    
+    // Mostrar meta si es por obstáculos
+    if(nivel.goalType == 1) {
+        LCD_Escr_String(" /");
+        if(nivel.goalValue >= 10) {
+            DIGITO('0' + (nivel.goalValue / 10));
+        }
+        DIGITO('0' + (nivel.goalValue % 10));
+    }
+    
+    // Efecto de parpadeo rápido (5 veces)
+    for(i = 0; i < 5; i++) {
+        __delay_ms(200);
+        COMANDO(0x08);  // Display OFF
+        __delay_ms(150);
+        COMANDO(0x0C);  // Display ON
+    }
+    
+    __delay_ms(2000);
+}
+
 // ============ EVALUACIÓN DE METAS ============
 void evaluar_metas(void) {
     // Meta tipo 1: Obstáculos esquivados
     if(nivel.goalType == 1) {
         if(telemetria.obstaclesEsquivados >= nivel.goalValue) {
-            // Victoria por obstáculos
             Activo = 0;
             telemetria.resultado = 1;  // Win
             
-            COMANDO(0x01);
-            __delay_ms(2);
-            
-            LCD_Posicion(0, 0);
-            LCD_Escr_String("GANASTE!");
-            LCD_Posicion(0, 1);
-            LCD_Escr_String("Obstac: ");
-            
-            unsigned char dec = '0' + (telemetria.obstaclesEsquivados / 10);
-            unsigned char uni = '0' + (telemetria.obstaclesEsquivados % 10);
-            DIGITO(dec);
-            DIGITO(uni);
-            
-            __delay_ms(3000);
+            // Mostrar pantalla de victoria
+            mostrar_victoria();
             
             // Enviar telemetría
             enviar_telemetria();
@@ -785,25 +881,11 @@ void evaluar_metas(void) {
     // Meta tipo 0: Tiempo sobrevivido
     else if(nivel.goalType == 0) {
         if(telemetria.tiempoTranscurrido >= nivel.goalValue) {
-            // Victoria por tiempo
             Activo = 0;
             telemetria.resultado = 1;  // Win
             
-            COMANDO(0x01);
-            __delay_ms(2);
-            
-            LCD_Posicion(0, 0);
-            LCD_Escr_String("GANASTE!");
-            LCD_Posicion(0, 1);
-            LCD_Escr_String("Tiempo: ");
-            
-            unsigned char dec = '0' + (telemetria.tiempoTranscurrido / 10);
-            unsigned char uni = '0' + (telemetria.tiempoTranscurrido % 10);
-            DIGITO(dec);
-            DIGITO(uni);
-            DIGITO('s');
-            
-            __delay_ms(3000);
+            // Mostrar pantalla de victoria
+            mostrar_victoria();
             
             // Enviar telemetría
             enviar_telemetria();
@@ -909,20 +991,8 @@ void main(void) {
                 Activo = 0;
                 telemetria.resultado = 0;  // Lose
                 
-                COMANDO(0x01);
-                __delay_ms(2);
-                
-                LCD_Posicion(0, 0);
-                LCD_Escr_String("GAME OVER!");
-                LCD_Posicion(0, 1);
-                LCD_Escr_String("Obst: ");
-                
-                unsigned char dec = '0' + (telemetria.obstaclesEsquivados / 10);
-                unsigned char uni = '0' + (telemetria.obstaclesEsquivados % 10);
-                DIGITO(dec);
-                DIGITO(uni);
-                
-                __delay_ms(3000);
+                // Mostrar pantalla de derrota
+                mostrar_derrota();
                 
                 // Enviar telemetría de pérdida
                 enviar_telemetria();
