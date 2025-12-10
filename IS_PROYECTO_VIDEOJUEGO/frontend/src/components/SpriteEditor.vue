@@ -2,6 +2,13 @@
   <div class="sprite-editor">
     <h3>{{ title }}</h3>
     
+    <!-- Galería de presets -->
+    <PresetGallery
+      title="Diseños predefinidos"
+      :presets="presets"
+      @select="loadPreset"
+    />
+
     <div class="editor-layout">
       <!-- Matriz 5x8 -->
       <div class="grid-container">
@@ -51,11 +58,14 @@
 
 <script>
 import SpritePreview from './SpritePreview.vue'
+import PresetGallery from './PresetGallery.vue'
+import { characterPresets, obstaclePresets } from '../data/presets.js'
 
 export default {
   name: 'SpriteEditor',
   components: {
-    SpritePreview
+    SpritePreview,
+    PresetGallery
   },
   props: {
     title: {
@@ -85,6 +95,9 @@ export default {
     },
     arrayRepresentation() {
       return '[' + this.matrixToArray().join(', ') + ']'
+    },
+    presets() {
+      return this.title.toLowerCase().includes('personaje') ? characterPresets : obstaclePresets
     }
   },
   watch: {
@@ -155,6 +168,11 @@ export default {
 
     invertGrid() {
       this.matrix = this.matrix.map(row => row.map(cell => !cell))
+      this.emitUpdate()
+    },
+
+    loadPreset(presetData) {
+      this.arrayToMatrix(presetData)
       this.emitUpdate()
     },
 
