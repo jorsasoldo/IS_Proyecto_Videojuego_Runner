@@ -58,7 +58,7 @@
 
 <script>
 import SpritePreview from './SpritePreview.vue'
-import PresetGallery from './PresetGallery.vue'
+import PresetGallery from './PressetsGalery.vue'
 import { characterPresets, obstaclePresets } from '../data/presets.js'
 
 export default {
