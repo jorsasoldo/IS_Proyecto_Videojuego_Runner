@@ -4,11 +4,9 @@ import json
 import time
 import threading
 
-# Importación relativa - el config está un nivel arriba
 try:
     from ..config import Config
 except ImportError:
-    # Fallback si la importación relativa falla
     import sys
     import os
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,10 +14,7 @@ except ImportError:
 
 api_bp = Blueprint('api', __name__)
 
-# Variable global para la conexión serial
 ser = None
-
-# Variables del watchdog
 watchdog_running = False
 watchdog_thread = None
 connection_status = {
@@ -29,12 +24,12 @@ connection_status = {
     'reconnection_attempts': 0
 }
 
-# Variable global para telemetría
 latest_telemetry = None
-
-# Thread de lectura serial
 serial_reader_thread = None
 serial_reader_running = False
+
+# NUEVO: Lock para sincronizar acceso al puerto serial
+serial_lock = threading.Lock()
 
 def check_connection():
     """Verifica si la conexión serial sigue activa"""
@@ -49,10 +44,7 @@ def check_connection():
         return False
 
 def watchdog_worker():
-    """
-    Thread que verifica la conexión serial cada 5 segundos
-    y reconecta automáticamente si se detecta desconexión
-    """
+    """Thread que verifica la conexión serial cada 5 segundos"""
     global ser, watchdog_running, connection_status
     
     print("[WATCHDOG] Iniciado - Verificando conexión cada 5 segundos")
@@ -65,7 +57,7 @@ def watchdog_worker():
         if not check_connection():
             if connection_status['is_connected']:
                 connection_status['disconnection_count'] += 1
-                print(f"[WATCHDOG] ⚠ Desconexión detectada (#{connection_status['disconnection_count']})")
+                print(f"[WATCHDOG] ⚠️ Desconexión detectada (#{connection_status['disconnection_count']})")
                 connection_status['is_connected'] = False
             
             print(f"[WATCHDOG] Intentando reconectar...")
@@ -74,7 +66,7 @@ def watchdog_worker():
             if init_serial():
                 print(f"[WATCHDOG] ✓ Reconexión exitosa")
                 connection_status['is_connected'] = True
-                start_serial_reader()  # Reiniciar el lector serial
+                start_serial_reader()
             else:
                 print(f"[WATCHDOG] ✗ Reconexión fallida (intento #{connection_status['reconnection_attempts']})")
         else:
@@ -83,11 +75,8 @@ def watchdog_worker():
     print("[WATCHDOG] Detenido")
 
 def serial_reader_worker():
-    """
-    Thread que lee constantemente del puerto serial
-    y detecta mensajes de telemetría del PIC
-    """
-    global ser, serial_reader_running, latest_telemetry
+    """Thread que lee constantemente del puerto serial"""
+    global ser, serial_reader_running, latest_telemetry, serial_lock
     
     print("[SERIAL_READER] Iniciado - Escuchando telemetría del PIC")
     
@@ -95,71 +84,56 @@ def serial_reader_worker():
     
     while serial_reader_running:
         try:
-            if ser and ser.is_open and ser.in_waiting > 0:
-                # Leer datos disponibles
-                chunk = ser.read(ser.in_waiting).decode('ascii', errors='ignore')
-                buffer += chunk
-                
-                # IGNORAR mensajes de confirmación ({"status":"loaded"...})
-                # Solo procesar telemetría de juego ({"obstacles":...)
-                
-                # Buscar JSON completo de telemetría
-                # Formato esperado: {"obstacles":15,"time":45,"result":"win"}
-                start_idx = buffer.find('{"obstacles"')
-                if start_idx != -1:
-                    end_idx = buffer.find('}', start_idx)
-                    if end_idx != -1:
-                        json_str = buffer[start_idx:end_idx+1]
+            # NUEVO: Usar lock para evitar conflictos
+            with serial_lock:
+                if ser and ser.is_open and ser.in_waiting > 0:
+                    chunk = ser.read(ser.in_waiting).decode('ascii', errors='ignore')
+                    buffer += chunk
+            
+            # Procesar telemetría
+            start_idx = buffer.find('{"obstacles"')
+            if start_idx != -1:
+                end_idx = buffer.find('}', start_idx)
+                if end_idx != -1:
+                    json_str = buffer[start_idx:end_idx+1]
+                    
+                    try:
+                        telemetry_data = json.loads(json_str)
                         
-                        try:
-                            # Parsear JSON
-                            telemetry_data = json.loads(json_str)
+                        if 'obstacles' in telemetry_data and 'time' in telemetry_data and 'result' in telemetry_data:
+                            result = telemetry_data['result'].lower()
+                            normalized_result = 'victory' if result in ['win', 'victory'] else 'defeat'
                             
-                            # Validar que tenga los campos esperados
-                            if 'obstacles' in telemetry_data and 'time' in telemetry_data and 'result' in telemetry_data:
-                                # Normalizar resultado
-                                result = telemetry_data['result'].lower()
-                                normalized_result = 'victory' if result in ['win', 'victory'] else 'defeat'
-                                
-                                # Guardar telemetría
-                                latest_telemetry = {
-                                    'obstacles_avoided': int(telemetry_data['obstacles']),
-                                    'survival_time': int(telemetry_data['time']),
-                                    'result': normalized_result,
-                                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                                }
-                                
-                                print(f"[SERIAL_READER] ✓ Telemetría recibida del PIC: {latest_telemetry}")
-                                
-                                # Limpiar buffer después de procesar
-                                buffer = buffer[end_idx+1:]
-                            else:
-                                print(f"[SERIAL_READER] ⚠ JSON incompleto: {json_str}")
-                                buffer = buffer[end_idx+1:]
-                                
-                        except json.JSONDecodeError as e:
-                            print(f"[SERIAL_READER] ✗ Error al parsear JSON: {e}")
-                            print(f"[SERIAL_READER] Contenido: {json_str}")
+                            latest_telemetry = {
+                                'obstacles_avoided': int(telemetry_data['obstacles']),
+                                'survival_time': int(telemetry_data['time']),
+                                'result': normalized_result,
+                                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                            }
+                            
+                            print(f"[SERIAL_READER] ✓ Telemetría recibida: {latest_telemetry}")
                             buffer = buffer[end_idx+1:]
-                        except ValueError as e:
-                            print(f"[SERIAL_READER] ✗ Error en valores: {e}")
+                        else:
+                            print(f"[SERIAL_READER] ⚠️ JSON incompleto: {json_str}")
                             buffer = buffer[end_idx+1:]
+                            
+                    except (json.JSONDecodeError, ValueError) as e:
+                        print(f"[SERIAL_READER] ✗ Error: {e}")
+                        buffer = buffer[end_idx+1:]
+            
+            # Limpiar mensajes de confirmación
+            if '{"status":"loaded"' in buffer:
+                conf_start = buffer.find('{"status":"loaded"')
+                conf_end = buffer.find('}', conf_start)
+                if conf_end != -1:
+                    buffer = buffer[:conf_start] + buffer[conf_end+1:]
+            
+            # Mantener buffer pequeño
+            if len(buffer) > 500:
+                buffer = buffer[-500:]
                 
-                # Limpiar mensajes de confirmación del buffer
-                if '{"status":"loaded"' in buffer:
-                    conf_start = buffer.find('{"status":"loaded"')
-                    conf_end = buffer.find('}', conf_start)
-                    if conf_end != -1:
-                        # Remover este mensaje de confirmación del buffer
-                        buffer = buffer[:conf_start] + buffer[conf_end+1:]
-                        print("[SERIAL_READER] 🗑️ Mensaje de confirmación descartado")
-                
-                # Mantener buffer pequeño (últimos 500 caracteres)
-                if len(buffer) > 500:
-                    buffer = buffer[-500:]
-            else:
-                # Pequeña pausa si no hay datos
-                time.sleep(0.1)
+            # Pausa si no hay datos
+            time.sleep(0.1)
                 
         except Exception as e:
             print(f"[SERIAL_READER] ✗ Error: {e}")
@@ -192,7 +166,8 @@ def stop_serial_reader():
         return
     
     serial_reader_running = False
-    print("[SERIAL_READER] Deteniendo...")
+    time.sleep(0.3)  # NUEVO: Esperar más tiempo para asegurar que se detenga
+    print("[SERIAL_READER] Detenido")
 
 def start_watchdog():
     """Inicia el thread del watchdog"""
@@ -221,27 +196,38 @@ def init_serial():
     """Inicializa la conexión serial con el PIC"""
     global ser, connection_status
     try:
-        # Cerrar conexión anterior si existe
         if ser is not None and ser.is_open:
             ser.close()
         
+        # NUEVO: Configuración mejorada con timeouts más largos
         ser = serial.Serial(
             port=Config.SERIAL_PORT,
             baudrate=Config.SERIAL_BAUDRATE,
             timeout=Config.SERIAL_TIMEOUT,
-            write_timeout=2
+            write_timeout=3,  # Aumentado de 2 a 3 segundos
+            # NUEVO: Parámetros adicionales para estabilidad
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            xonxoff=False,
+            rtscts=False,
+            dsrdtr=False
         )
-        time.sleep(2)  # Espera a que el PIC se inicialice
         
-        # Limpiar buffers
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
+        # NUEVO: Esperar más tiempo para el FT232BL
+        time.sleep(3)  # Aumentado de 2 a 3 segundos
+        
+        # Limpiar buffers múltiples veces
+        for _ in range(3):
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+            time.sleep(0.1)
         
         connection_status['is_connected'] = True
         print(f"✓ Puerto serial {Config.SERIAL_PORT} conectado")
         
-        # Iniciar lector serial
-        start_serial_reader()
+        # NO iniciar el reader automáticamente
+        # Se iniciará después del primer envío exitoso
         
         return True
     except serial.SerialException as e:
@@ -252,88 +238,100 @@ def init_serial():
 
 def send_to_pic(data):
     """Envía datos JSON al PIC vía serial y espera confirmación"""
-    global ser, serial_reader_running
+    global ser, serial_reader_running, serial_lock
     
-    # Intenta inicializar si no está conectado
     if ser is None or not ser.is_open:
         if not init_serial():
             return False, "Puerto serial no disponible", None
     
     try:
-        # PAUSA TEMPORAL del serial_reader para evitar interferencias
+        # NUEVO: Detener reader y esperar más tiempo
         reader_was_running = serial_reader_running
         if reader_was_running:
+            print("[SEND_CONFIG] Deteniendo serial reader...")
             stop_serial_reader()
-            time.sleep(0.2)  # Pequeña pausa para que termine de leer
+            time.sleep(0.5)  # Aumentado de 0.2 a 0.5 segundos
         
-        # Convierte el diccionario a JSON compacto (sin espacios)
         json_str = json.dumps(data, separators=(',', ':'))
         
-        # Limpia AGRESIVAMENTE los buffers
-        ser.reset_input_buffer()
-        time.sleep(0.1)
-        
-        # Leer y descartar cualquier dato residual
-        if ser.in_waiting > 0:
-            garbage = ser.read(ser.in_waiting)
-            print(f"[SEND_CONFIG] 🗑️ Descartados {len(garbage)} bytes residuales")
-        
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
-        
-        # Envía el JSON
-        ser.write(json_str.encode('ascii'))
-        ser.flush()
-        
-        print(f"→ Enviado al PIC: {json_str}")
-        
-        # Espera respuesta del PIC con timeout extendido
-        response_timeout = 5  # Aumentado a 5 segundos
-        start_time = time.time()
-        response_buffer = ""
-        
-        while (time.time() - start_time) < response_timeout:
-            if ser.in_waiting > 0:
-                chunk = ser.read(ser.in_waiting).decode('ascii', errors='ignore')
-                response_buffer += chunk
-                
-                # Busca el JSON de respuesta completo
-                if '{"status":"loaded"' in response_buffer:
-                    # Buscar el cierre del JSON
-                    start_idx = response_buffer.find('{"status":"loaded"')
-                    end_idx = response_buffer.find('}', start_idx)
-                    
-                    if end_idx != -1:
-                        json_response = response_buffer[start_idx:end_idx+1]
-                        print(f"← Respuesta del PIC: {json_response}")
-                        
-                        # REINICIAR serial_reader si estaba corriendo
-                        if reader_was_running:
-                            time.sleep(0.2)
-                            start_serial_reader()
-                        
-                        return True, "Configuración cargada exitosamente", json_response
+        # NUEVO: Usar lock para acceso exclusivo
+        with serial_lock:
+            # NUEVO: Limpieza AGRESIVA múltiple
+            print("[SEND_CONFIG] Limpiando buffers...")
+            for _ in range(5):  # Aumentado de 1 a 5 intentos
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+                time.sleep(0.05)
             
-            time.sleep(0.05)  # Polling más frecuente
+            # Descartar datos residuales
+            time.sleep(0.2)
+            if ser.in_waiting > 0:
+                garbage = ser.read(ser.in_waiting)
+                print(f"[SEND_CONFIG] 🗑️ Descartados {len(garbage)} bytes: {garbage[:50]}")
+            
+            # Limpieza final
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+            time.sleep(0.1)
+            
+            # NUEVO: Enviar con delay entre caracteres para FT232BL
+            print(f"[SEND_CONFIG] → Enviando: {json_str}")
+            for char in json_str:
+                ser.write(char.encode('ascii'))
+                time.sleep(0.001)  # 1ms entre caracteres
+            ser.flush()
+            
+            # NUEVO: Esperar más tiempo antes de leer respuesta
+            time.sleep(0.5)  # Dar tiempo al PIC para procesar
+            
+            # Espera respuesta del PIC con timeout extendido
+            response_timeout = 8  # Aumentado de 5 a 8 segundos
+            start_time = time.time()
+            response_buffer = ""
+            
+            print("[SEND_CONFIG] Esperando respuesta del PIC...")
+            
+            while (time.time() - start_time) < response_timeout:
+                if ser.in_waiting > 0:
+                    chunk = ser.read(ser.in_waiting).decode('ascii', errors='ignore')
+                    response_buffer += chunk
+                    print(f"[SEND_CONFIG] ← Recibido: {chunk}")
+                    
+                    # Busca el JSON de respuesta completo
+                    if '{"status":"loaded"' in response_buffer:
+                        start_idx = response_buffer.find('{"status":"loaded"')
+                        end_idx = response_buffer.find('}', start_idx)
+                        
+                        if end_idx != -1:
+                            json_response = response_buffer[start_idx:end_idx+1]
+                            print(f"[SEND_CONFIG] ✓ Respuesta completa: {json_response}")
+                            
+                            # NUEVO: Iniciar reader solo después del primer envío exitoso
+                            if reader_was_running or not serial_reader_running:
+                                time.sleep(0.5)
+                                start_serial_reader()
+                            
+                            return True, "Configuración cargada exitosamente", json_response
+                
+                time.sleep(0.05)
         
-        # REINICIAR serial_reader aunque haya fallado
+        # Si llegamos aquí, no se recibió la confirmación
+        print(f"[SEND_CONFIG] ⚠️ Timeout - Buffer recibido: {response_buffer}")
+        
+        # Reiniciar reader aunque haya fallado
         if reader_was_running:
             start_serial_reader()
         
-        # Si llegamos aquí, no se recibió la confirmación
         if response_buffer:
-            print(f"← Respuesta parcial del PIC: {response_buffer}")
             return False, f"Respuesta incompleta del PIC: {response_buffer}", response_buffer
         else:
             return False, "El PIC no respondió (timeout)", None
         
     except serial.SerialTimeoutException:
-        # Reiniciar reader
         if reader_was_running:
             start_serial_reader()
         return False, "Timeout al enviar datos", None
     except Exception as e:
-        # Reiniciar reader
         if reader_was_running:
             start_serial_reader()
         return False, f"Error en comunicación serial: {str(e)}", None
@@ -353,22 +351,18 @@ def send_config():
             if field not in data:
                 return jsonify({'error': f'Missing field: {field}'}), 400
         
-        # Valida que character y obstacle sean arrays de 8 elementos
         if not isinstance(data['character'], list) or len(data['character']) != 8:
             return jsonify({'error': 'character debe ser un array de 8 elementos'}), 400
         
         if not isinstance(data['obstacle'], list) or len(data['obstacle']) != 8:
             return jsonify({'error': 'obstacle debe ser un array de 8 elementos'}), 400
         
-        # Valida goalType
         if data['goalType'] not in ['time', 'obstacles']:
             return jsonify({'error': 'goalType debe ser "time" u "obstacles"'}), 400
         
-        # Valida goalValue
         if not isinstance(data['goalValue'], (int, float)) or data['goalValue'] <= 0:
             return jsonify({'error': 'goalValue debe ser un número positivo'}), 400
         
-        # Prepara datos completos para el PIC
         pic_data = {
             'character': data['character'],
             'obstacle': data['obstacle'],
@@ -376,23 +370,37 @@ def send_config():
             'goalValue': int(data['goalValue'])
         }
         
-        # Envía al PIC y espera confirmación
-        success, message, pic_response = send_to_pic(pic_data)
+        # NUEVO: Intentar hasta 2 veces en caso de fallo
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            print(f"[API] Intento {attempt + 1} de {max_attempts}")
+            
+            success, message, pic_response = send_to_pic(pic_data)
+            
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': message,
+                    'data': data,
+                    'pic_response': pic_response
+                }), 200
+            
+            # Si falla el primer intento, esperar y reiniciar conexión
+            if attempt < max_attempts - 1:
+                print(f"[API] Intento {attempt + 1} falló, reiniciando conexión...")
+                time.sleep(1)
+                if ser and ser.is_open:
+                    ser.close()
+                    time.sleep(0.5)
+                init_serial()
         
-        if success:
-            return jsonify({
-                'status': 'success',
-                'message': message,
-                'data': data,
-                'pic_response': pic_response
-            }), 200
-        else:
-            return jsonify({
-                'status': 'error',
-                'message': message,
-                'data': data,
-                'pic_response': pic_response
-            }), 500
+        # Si todos los intentos fallaron
+        return jsonify({
+            'status': 'error',
+            'message': message,
+            'data': data,
+            'pic_response': pic_response
+        }), 500
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -418,7 +426,6 @@ def serial_reconnect():
     """Intenta reconectar el puerto serial"""
     global ser
     
-    # Cierra conexión existente
     if ser is not None and ser.is_open:
         ser.close()
     
@@ -465,30 +472,18 @@ def watchdog_status():
 
 @api_bp.route('/telemetry', methods=['POST'])
 def receive_telemetry():
-    """
-    Endpoint alternativo para recibir telemetría vía HTTP POST
-    (útil para pruebas manuales)
-    
-    Espera JSON:
-    {
-        "obstacles": 15,
-        "time": 45,
-        "result": "win" o "lose"
-    }
-    """
+    """Endpoint alternativo para recibir telemetría vía HTTP POST"""
     try:
         data = request.get_json()
         
         if not data:
             return jsonify({'error': 'No data provided'}), 400
         
-        # Validar campos requeridos
         required_fields = ['obstacles', 'time', 'result']
         for field in required_fields:
             if field not in data:
                 return jsonify({'error': f'Missing field: {field}'}), 400
         
-        # Validar tipos de datos
         if not isinstance(data['obstacles'], int) or data['obstacles'] < 0:
             return jsonify({'error': 'obstacles debe ser un entero no negativo'}), 400
         
@@ -500,7 +495,6 @@ def receive_telemetry():
         
         normalized_result = 'victory' if data['result'] in ['win', 'victory'] else 'defeat'
         
-        # Guardar telemetría en variable global
         global latest_telemetry
         latest_telemetry = {
             'obstacles_avoided': data['obstacles'],
@@ -522,10 +516,7 @@ def receive_telemetry():
 
 @api_bp.route('/telemetry/latest', methods=['GET'])
 def get_latest_telemetry():
-    """
-    Obtiene la última telemetría recibida
-    El frontend puede hacer polling a este endpoint
-    """
+    """Obtiene la última telemetría recibida"""
     global latest_telemetry
     
     if latest_telemetry is None:
@@ -541,9 +532,7 @@ def get_latest_telemetry():
 
 @api_bp.route('/telemetry/clear', methods=['POST'])
 def clear_telemetry():
-    """
-    Limpia la telemetría almacenada
-    """
+    """Limpia la telemetría almacenada"""
     global latest_telemetry
     latest_telemetry = None
     
@@ -557,7 +546,6 @@ def clear_telemetry():
 @api_bp.route('/health', methods=['GET'])
 def health():
     """Endpoint de health check"""
-    # Iniciar watchdog automáticamente si no está corriendo
     if not watchdog_running:
         start_watchdog()
     
