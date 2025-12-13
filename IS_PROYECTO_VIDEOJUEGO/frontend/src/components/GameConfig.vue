@@ -13,6 +13,15 @@
       </button>
     </div>
 
+    <!-- Estado del polling -->
+    <div v-if="isPolling" class="polling-status">
+      <span class="polling-icon">🔄</span>
+      <span>Esperando resultados del juego...</span>
+      <div class="polling-dots">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+
     <!-- Editores de sprites -->
     <div class="editors-container">
       <SpriteEditor
@@ -77,16 +86,6 @@
       :steps="loadingSteps"
       :current-step="currentLoadingStep"
     />
-
-    <!-- Botones de prueba temporal -->
-    <div style="text-align: center; margin-top: 1rem;">
-      <button @click="testTelemetry('victory')" class="btn-test">
-        🧪 Test Victoria
-      </button>
-      <button @click="testTelemetry('defeat')" class="btn-test">
-        🧪 Test Derrota
-      </button>
-    </div>
   </div>
 </template>
 
@@ -136,7 +135,9 @@ export default {
         goalValue: 0
       },
       pollingInterval: null,
-      isPolling: false
+      isPolling: false,
+      pollingAttempts: 0,
+      maxPollingAttempts: 300  // 300 intentos * 2 segundos = 10 minutos máximo
     }
   },
   computed: {
@@ -152,7 +153,7 @@ export default {
     },
     messageIcon() {
       const icons = {
-        success: '✓',
+        success: '✔',
         error: '✗',
         warning: '⚠',
         info: 'ℹ'
@@ -247,6 +248,10 @@ export default {
       this.currentLoadingStep = 0
 
       try {
+        // PASO 0: Limpiar telemetría anterior ANTES de enviar
+        await this.clearTelemetry()
+        await this.delay(200)
+        
         this.currentLoadingStep = 0
         await this.delay(300)
 
@@ -268,9 +273,13 @@ export default {
         await this.delay(300)
 
         if (response.ok) {
-          this.showMessage('Configuración cargada correctamente en el dispositivo', 'success')
+          this.showMessage('Configuración cargada correctamente en el dispositivo. ¡Comienza a jugar!', 'success')
           console.log('Respuesta del PIC:', data)
           
+          // Esperar un poco antes de iniciar polling
+          await this.delay(500)
+          
+          // Iniciar polling de telemetría
           this.startTelemetryPolling()
         } else {
           this.handleErrorResponse(data, response.status)
@@ -368,13 +377,18 @@ export default {
 
     handlePlayAgain() {
       this.showTelemetry = false
-      this.showMessage('Reinicia el juego en el dispositivo para jugar de nuevo', 'info')
+      this.showMessage('El juego está listo. ¡Comienza a jugar en el dispositivo!', 'info')
     },
 
     startTelemetryPolling() {
+      // Limpiar telemetría anterior
       this.clearTelemetry()
       
+      // Reiniciar contadores
+      this.pollingAttempts = 0
       this.isPolling = true
+      
+      // Iniciar polling cada 2 segundos
       this.pollingInterval = setInterval(async () => {
         await this.checkForTelemetry()
       }, 2000)
@@ -387,12 +401,22 @@ export default {
         clearInterval(this.pollingInterval)
         this.pollingInterval = null
         this.isPolling = false
+        this.pollingAttempts = 0
         console.log('[POLLING] Detenido')
       }
     },
 
     async checkForTelemetry() {
       try {
+        this.pollingAttempts++
+        
+        // Detener después de máximo de intentos
+        if (this.pollingAttempts > this.maxPollingAttempts) {
+          console.log('[POLLING] Timeout - Deteniendo polling')
+          this.stopTelemetryPolling()
+          return
+        }
+        
         const response = await fetch('http://localhost:5000/api/telemetry/latest')
         const data = await response.json()
         
@@ -400,9 +424,20 @@ export default {
           console.log('[POLLING] Telemetría recibida:', data.data)
           this.stopTelemetryPolling()
           this.showTelemetryResults(data.data)
+        } else {
+          // Log cada 15 intentos (30 segundos)
+          if (this.pollingAttempts % 15 === 0) {
+            console.log(`[POLLING] Esperando telemetría... (${this.pollingAttempts} intentos)`)
+          }
         }
       } catch (error) {
         console.error('[POLLING] Error:', error)
+        
+        // Si hay múltiples errores consecutivos, detener
+        if (this.pollingAttempts > 5) {
+          this.stopTelemetryPolling()
+          this.showMessage('Error al conectar con el servidor. Verifica que el backend esté ejecutándose.', 'error')
+        }
       }
     },
 
@@ -411,30 +446,9 @@ export default {
         await fetch('http://localhost:5000/api/telemetry/clear', {
           method: 'POST'
         })
+        console.log('[TELEMETRY] Buffer limpiado')
       } catch (error) {
         console.error('[TELEMETRY] Error al limpiar:', error)
-      }
-    },
-
-    async testTelemetry(result = 'victory') {
-      const mockData = {
-        obstacles: Math.floor(Math.random() * 20) + 5,
-        time: Math.floor(Math.random() * 120) + 30,
-        result: result === 'victory' ? 'win' : 'lose'
-      }
-      
-      try {
-        await fetch('http://localhost:5000/api/telemetry', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(mockData)
-        })
-        
-        this.startTelemetryPolling()
-      } catch (error) {
-        console.error('Error en test:', error)
       }
     }
   }
@@ -463,7 +477,7 @@ h1 {
   background: #fff3cd;
   border: 2px solid #ffc107;
   border-radius: 8px;
-  margin-bottom: 2rem;
+  margin-bottom: 1rem;
   font-weight: 500;
 }
 
@@ -495,6 +509,78 @@ h1 {
 
 .btn-refresh:hover, .btn-reconnect:hover {
   background: #0056b3;
+}
+
+.polling-status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+  border: 2px solid #2196f3;
+  border-radius: 8px;
+  margin-bottom: 2rem;
+  font-weight: 500;
+  color: #1565c0;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.polling-icon {
+  font-size: 1.5rem;
+  animation: rotate 2s linear infinite;
+}
+
+@keyframes rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.polling-dots {
+  display: flex;
+  gap: 0.3rem;
+  margin-left: auto;
+}
+
+.polling-dots span {
+  width: 8px;
+  height: 8px;
+  background: #2196f3;
+  border-radius: 50%;
+  animation: bounce 1.4s ease infinite;
+}
+
+.polling-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.polling-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes bounce {
+  0%, 80%, 100% {
+    transform: scale(0);
+    opacity: 0.5;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .editors-container {
@@ -575,17 +661,6 @@ h1 {
   animation: slideDown 0.3s ease;
 }
 
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 .message-icon {
   font-size: 2rem;
   font-weight: bold;
@@ -655,20 +730,5 @@ h1 {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
-}
-
-.btn-test {
-  padding: 0.5rem 1rem;
-  margin: 0 0.5rem;
-  background: #9c27b0;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.9rem;
-}
-
-.btn-test:hover {
-  background: #7b1fa2;
 }
 </style>
