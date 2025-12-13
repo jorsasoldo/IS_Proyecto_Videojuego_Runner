@@ -13,6 +13,8 @@
 // ============ DEFINICIONES DE HARDWARE ============
 #define SALTA PORTDbits.RD0
 #define AGACHA PORTDbits.RD1
+#define BOCINA PORTEbits.RE2
+#define LED PORTAbits.RA0
 
 // Dimensiones del display
 #define COLUMNAS 16
@@ -26,7 +28,6 @@
 #define SCORE_COL 14
 
 // ============ OPTIMIZACIÓN: BUFFER UART REDUCIDO ============
-// Reducido de 32 a 24 bytes - suficiente para JSON pequeño
 #define BUFFER_SIZE 16
 #define BUFFER_MASK 0x0F
 volatile unsigned char uartBuffer[BUFFER_SIZE];
@@ -54,8 +55,7 @@ typedef struct {
 GameTelemetry telemetria;
 
 // ============ VARIABLES DEL JUEGO - OPTIMIZADAS ============
-// Buffer reducido - solo parte visible (13 columnas + 3 para score)
-unsigned char displayBuffer[FILAS][13];  // Reducido de 16 a 13
+unsigned char displayBuffer[FILAS][13];
 
 // Variables de estado - empaquetadas
 unsigned char Fila_Personaje = 1;
@@ -66,18 +66,18 @@ unsigned char semilla = 0;
 
 // Flags combinados en un byte
 unsigned char gameFlags = 0;
-#define GAME_ACTIVE     0x01  // Bit 0: Activo
-#define GAME_INIT       0x02  // Bit 1: gameInitialized
+#define GAME_ACTIVE     0x01
+#define GAME_INIT       0x02
 
 // Variables de tiempo - optimizadas
 volatile unsigned char timerTicks = 0;
 unsigned char segundosJuego = 0;
 
-// Buffer temporal - reducido de 5 a 4
+// Buffer temporal
 unsigned char tempBuffer[4];
-unsigned char proxima_generacion = 0;  // Contador hasta próximo obstáculo
-unsigned char separacion_minima = 2;   // Mínimo de ciclos entre obstáculos
-unsigned char separacion_maxima = 5;   // Máximo de ciclos entre obstáculos
+unsigned char proxima_generacion = 0;
+unsigned char separacion_minima = 2;
+unsigned char separacion_maxima = 5;
 
 // ============ MACROS INLINE PARA VELOCIDAD ============
 #define SET_FLAG(var, flag) ((var) |= (flag))
@@ -131,10 +131,44 @@ unsigned char validarConfiguracion(void);
 void inicializarNivel(void);
 void calcular_proxima_separacion(void);
 
+// Prototipos de música
+void PARPADEO(void);
+void iniciar(void);
+void death(void);
+void victoria(void);
+
+// Notas musicales
+void MI_OCT_5(void);
+void DO_OCT_5(void);
+void SOL_OCT_5(void);
+void SOL_OCT_4(void);
+void LA_OCT_4(void);
+void FA_OCT_5(void);
+void FA_OCT_2(void);
+void SOL_OCT_2(void);
+void LA_OCT_2(void);
+void LAS_OCT_2(void);
+void DO_OCT_3(void);
+void RE_OCT_3(void);
+void MI_OCT_3(void);
+void FA_OCT_3(void);
+void SOL_OCT_3(void);
+void SI_OCT_4(void);
+void RE_OCT_5(void);
+void LA_OCT_3(void);
+void SI_OCT_3(void);
+void DO_OCT_4(void);
+void MI_OCT_4(void);
+void DO_OCT_3(void);
+void LA_OCT_5(void);
+void SI_OCT_5(void);
+void DO_OCT_6(void);
+void RE_OCT_6(void);
+
 // ============ FUNCIONES LCD - OPTIMIZADAS ============
 void E_ENC(void) {
     PORTCbits.RC2 = 1;
-    __delay_us(100);  // Reducido de 5ms a 100us
+    __delay_us(100);
     PORTCbits.RC2 = 0;
 }
 
@@ -143,7 +177,7 @@ void COMANDO(unsigned char valor) {
     PORTCbits.RC0 = 0;
     PORTCbits.RC1 = 0;
     E_ENC();
-    __delay_us(50);  // Reducido de 5ms a 50us
+    __delay_us(50);
 }
 
 void DIGITO(unsigned char valor) {
@@ -171,16 +205,14 @@ void LCD_Init(void) {
 void LCD_CargarSprites(void) {
     unsigned char i;
     
-    // Cargar personaje en CGRAM 0x00
     COMANDO(0x40);
     for(i = 0; i < 8; i++) DIGITO(nivel.character[i]);
     
-    // Cargar obstáculo en CGRAM 0x01
     COMANDO(0x48);
     for(i = 0; i < 8; i++) DIGITO(nivel.obstacle[i]);
     
     COMANDO(0x80);
-    SET_FLAG(nivel.flags, 0x03);  // Bits 0 y 1
+    SET_FLAG(nivel.flags, 0x03);
 }
 
 void LCD_Posicion(unsigned char col, unsigned char fila) {
@@ -219,28 +251,21 @@ void UART_Escr_String(const char *str) {
 
 // ============ TIMER1 OPTIMIZADO ============
 void Timer1_Init(void) {
-    T1CONbits.TMR1ON = 0;           // Apagar primero
-    T1CONbits.TMR1CS = 0;           // Fuente de reloj interno (FOSC/4)
-    T1CONbits.T1CKPS0 = 1;          // Prescaler 1:8
-    T1CONbits.T1CKPS1 = 1;          // (11 = 1:8)
+    T1CONbits.TMR1ON = 0;
+    T1CONbits.TMR1CS = 0;
+    T1CONbits.T1CKPS0 = 1;
+    T1CONbits.T1CKPS1 = 1;
     
-    // CORRECCIÓN: Para 4MHz con prescaler 1:8
-    // Ciclos por segundo = 4MHz / 4 / 8 = 125,000 Hz
-    // Para 1 segundo necesitamos contar 125,000 ciclos
-    // Timer1 es de 16 bits (0-65535), entonces:
-    // Valor inicial = 65536 - 62500 = 3036 = 0x0BDC
-    // Con 2 interrupciones por segundo
     TMR1H = 0x0B;
     TMR1L = 0xDC;
     
-    PIR1bits.TMR1IF = 0;            // Limpiar bandera
-    PIE1bits.TMR1IE = 1;            // Habilitar interrupción
+    PIR1bits.TMR1IF = 0;
+    PIE1bits.TMR1IE = 1;
     timerTicks = 0;
     segundosJuego = 0;
 }
 
 void __interrupt() ISR(void) {
-    // Interrupción UART
     if(PIR1bits.RCIF) {
         if(RCSTAbits.OERR) {
             RCSTAbits.CREN = 0;
@@ -250,18 +275,15 @@ void __interrupt() ISR(void) {
         bufferWrite++;
     }
     
-    // Interrupción Timer1
     if(PIR1bits.TMR1IF) {
         PIR1bits.TMR1IF = 0;
         
-        // Recargar Timer1
         TMR1H = 0x0B;
         TMR1L = 0xDC;
         
-        // CORRECCIÓN: Contar ticks - cada 2 ticks = 1 segundo
-        if(CHK_FLAG(telemetria.flags, 0x02)) {  // Solo si partida activa
+        if(CHK_FLAG(telemetria.flags, 0x02)) {
             timerTicks++;
-            if(timerTicks >= 2) {  // Cada 2 interrupciones = 1 segundo
+            if(timerTicks >= 2) {
                 timerTicks = 0;
                 segundosJuego++;
                 telemetria.tiempoTranscurrido = segundosJuego;
@@ -324,7 +346,6 @@ void JSON_Parse(void) {
     
     nivel.flags = 0;
     
-    // Buscar inicio
     while(!buscaChar('{'));
     while(UART_LeeBuffer() != '{');
     
@@ -354,7 +375,7 @@ void JSON_Parse(void) {
     }
     SET_FLAG(nivel.flags, 0x02);
     
-    // GOALTYPE - CORREGIDO
+    // GOALTYPE
     while(1) {
         c = UART_LeeBuffer();
         if(c == '"') {
@@ -362,7 +383,6 @@ void JSON_Parse(void) {
             if(c == 'g') {
                 c = UART_LeeBuffer();
                 if(c == 'o' && UART_LeeBuffer() == 'a') {
-                    // Encontramos "goalType"
                     break;
                 }
             }
@@ -371,19 +391,14 @@ void JSON_Parse(void) {
     while(UART_LeeBuffer() != ':');
     while(UART_LeeBuffer() != '"');
     
-    // Leer el valor: "time" o "obstacles"
     c = UART_LeeBuffer();
     if(c == 't') {
-        // Es "time"
         nivel.goalType = 0;
-        // Consumir resto: "ime"
         UART_LeeBuffer();
         UART_LeeBuffer();
         UART_LeeBuffer();
     } else {
-        // Es "obstacles"
         nivel.goalType = 1;
-        // Consumir resto: "bstacles"
         for(i = 0; i < 8; i++) UART_LeeBuffer();
     }
     
@@ -395,7 +410,6 @@ void JSON_Parse(void) {
             if(c == 'g') {
                 c = UART_LeeBuffer();
                 if(c == 'o' && UART_LeeBuffer() == 'a') {
-                    // Encontramos "goalValue"
                     while(UART_LeeBuffer() != ':');
                     break;
                 }
@@ -435,16 +449,14 @@ void inicializarNivel(void) {
 void inicializar_telemetria(void) {
     telemetria.obstaclesEsquivados = 0;
     telemetria.tiempoTranscurrido = 0;
-    telemetria.flags = 0x02;  // partidaActiva = 1
+    telemetria.flags = 0x02;
     segundosJuego = 0;
     timerTicks = 0;
     
-    // Reiniciar Timer1
     TMR1H = 0x0B;
     TMR1L = 0xDC;
     PIR1bits.TMR1IF = 0;
     
-    // Iniciar Timer1
     T1CONbits.TMR1ON = 1;
 }
 
@@ -455,7 +467,6 @@ void enviar_telemetria(void) {
     
     UART_Escr_String("{\"obstacles\":");
     
-    // Enviar obstáculos (sin corrección)
     val = telemetria.obstaclesEsquivados;
     idx = 0;
     if(val == 0) {
@@ -465,7 +476,6 @@ void enviar_telemetria(void) {
             buffer[idx++] = (val % 10) + '0';
             val /= 10;
         }
-        // Invertir
         temp = 0;
         while(temp < idx/2) {
             unsigned char t = buffer[temp];
@@ -478,17 +488,8 @@ void enviar_telemetria(void) {
     
     UART_Escr_String(",\"time\":");
     
-    // *** CORRECCIÃ"N: RESTAR 4 SEGUNDOS AL TIEMPO ***
     tiempo_corregido = telemetria.tiempoTranscurrido;
     
-    // Protección: no enviar valores negativos
-    if(tiempo_corregido >= 4) {
-        tiempo_corregido -= 4;
-    } else {
-        tiempo_corregido = 1;  // Si es menor a 4s, enviar 1
-    }
-    
-    // Convertir tiempo corregido a string
     val = tiempo_corregido;
     idx = 0;
     if(val == 0) {
@@ -516,9 +517,12 @@ void enviar_telemetria(void) {
     CLR_FLAG(telemetria.flags, 0x02);
 }
 
-// ============ PANTALLAS - OPTIMIZADAS ============
+// ============ PANTALLAS CON MÚSICA - OPTIMIZADAS ============
 void mostrar_victoria(void) {
     unsigned char i;
+    
+    // DETENER el Timer1 para que no siga contando durante la pantalla
+    T1CONbits.TMR1ON = 0;
     
     COMANDO(0x01);
     __delay_ms(2);
@@ -527,7 +531,6 @@ void mostrar_victoria(void) {
     LCD_Escr_String("YOU WIN!");
     
     LCD_Posicion(0, 1);
-    // SIEMPRE mostrar obstáculos y tiempo en ambos modos
     LCD_Escr_String("Obst:");
     if(telemetria.obstaclesEsquivados >= 10)
         DIGITO('0' + (telemetria.obstaclesEsquivados / 10));
@@ -538,6 +541,15 @@ void mostrar_victoria(void) {
         DIGITO('0' + (telemetria.tiempoTranscurrido / 10));
     DIGITO('0' + (telemetria.tiempoTranscurrido % 10));
     DIGITO('s');
+    
+    // Parpadeo del LED durante la pantalla de victoria
+    for(i = 0; i < 4; i++) {
+        PARPADEO();
+    }
+    
+    // Reproducir canción de victoria
+    victoria();
+
     
     for(i = 0; i < 3; i++) {
         __delay_ms(500);
@@ -551,6 +563,9 @@ void mostrar_victoria(void) {
 void mostrar_derrota(void) {
     unsigned char i;
     
+    // DETENER el Timer1 para que no siga contando durante la pantalla
+    T1CONbits.TMR1ON = 0;
+    
     COMANDO(0x01);
     __delay_ms(2);
     
@@ -559,7 +574,6 @@ void mostrar_derrota(void) {
     
     LCD_Posicion(0, 1);
     
-    // Mostrar obstáculos
     LCD_Escr_String("O:");
     if(telemetria.obstaclesEsquivados >= 10)
         DIGITO('0' + (telemetria.obstaclesEsquivados / 10));
@@ -567,18 +581,24 @@ void mostrar_derrota(void) {
     
     LCD_Escr_String(" T:");
     
-    // Mostrar tiempo
     if(telemetria.tiempoTranscurrido >= 10)
         DIGITO('0' + (telemetria.tiempoTranscurrido / 10));
     DIGITO('0' + (telemetria.tiempoTranscurrido % 10));
     DIGITO('s');
     
-    // Mostrar objetivo si era por obstáculos
     if(nivel.goalType == 1) {
         LCD_Escr_String(" /");
         if(nivel.goalValue >= 10)
             DIGITO('0' + (nivel.goalValue / 10));
         DIGITO('0' + (nivel.goalValue % 10));
+    }
+    
+    // Reproducir canción de muerte
+    death();
+    
+    // Parpadeo del LED durante la pantalla de derrota
+    for(i = 0; i < 5; i++) {
+        PARPADEO();
     }
     
     for(i = 0; i < 5; i++) {
@@ -593,6 +613,7 @@ void mostrar_derrota(void) {
 // ============ FUNCIONES DEL JUEGO - ULTRA OPTIMIZADAS ============
 void inicializar_juego(void) {
     unsigned char fil, col;
+    unsigned char i;
     
     COMANDO(0x01);
     __delay_ms(2);
@@ -608,15 +629,22 @@ void inicializar_juego(void) {
     Cont_Obstaculo = 0;
     puntuacion = 0;
     
-    // *** NUEVO: Inicializar sistema de obstáculos aleatorios ***
-    semilla += TMR0;  // Actualizar semilla con timer
-    calcular_proxima_separacion();  // Primera separación aleatoria
+    semilla += TMR0;
+    calcular_proxima_separacion();
     
     displayBuffer[1][0] = PERSONAJE;
     
     SET_FLAG(gameFlags, GAME_ACTIVE | GAME_INIT);
     
+    // Reproducir canción de inicio con parpadeo ANTES de iniciar telemetría
+    iniciar();
+    
+    // AHORA SÍ inicializar telemetría y arrancar el timer
     inicializar_telemetria();
+    
+    // Actualizar pantalla después de la música
+    actualizar_pantalla_rapido();
+    actualizar_score_rapido();
 }
 
 void leer_botones_rapido(void) {
@@ -625,7 +653,7 @@ void leer_botones_rapido(void) {
         Fila_Personaje = 0;
         Ult_Fila_Personaje = 0;
         displayBuffer[0][0] = PERSONAJE;
-        __delay_ms(15);  // Antirebote reducido
+        __delay_ms(15);
     }
     else if(AGACHA && !Fila_Personaje) {
         displayBuffer[0][0] = ' ';
@@ -639,21 +667,16 @@ void leer_botones_rapido(void) {
 void generar_obstaculo(void) {
     unsigned char fila_aleatoria;
     
-    // Solo generar si las columnas finales están vacías
     if(displayBuffer[0][12] == ' ' && displayBuffer[1][12] == ' ') {
         
-        // Generar número aleatorio mejorado para la fila
-        // Usar múltiples fuentes de aleatoriedad
         fila_aleatoria = random_number(100);
         
-        // Distribución más equilibrada: 50-50
         if(fila_aleatoria < 50) {
-            displayBuffer[0][12] = OBSTACULO;  // Fila superior
+            displayBuffer[0][12] = OBSTACULO;
         } else {
-            displayBuffer[1][12] = OBSTACULO;  // Fila inferior
+            displayBuffer[1][12] = OBSTACULO;
         }
         
-        // Calcular cuándo será el próximo obstáculo
         calcular_proxima_separacion();
     }
 }
@@ -678,26 +701,22 @@ void actualizar_pantalla_rapido(void) {
 
 void actualizar_score_rapido(void) {
     if(nivel.goalType == 1) {
-        // Meta por OBSTÁCULOS - Mostrar solo obstáculos esquivados
         LCD_Posicion(SCORE_COL, 0);
         DIGITO('0' + (puntuacion / 10));
         DIGITO('0' + (puntuacion % 10));
         
-        // Limpiar línea 1 del score (opcional)
         LCD_Posicion(SCORE_COL, 1);
         DIGITO(' ');
         DIGITO(' ');
     } 
     else {
-        // Meta por TIEMPO - Mostrar solo tiempo transcurrido
         LCD_Posicion(SCORE_COL, 0);
         if(telemetria.tiempoTranscurrido >= 10)
             DIGITO('0' + (telemetria.tiempoTranscurrido / 10));
         else
-            DIGITO(' ');  // Espacio si es menor a 10
+            DIGITO(' ');
         DIGITO('0' + (telemetria.tiempoTranscurrido % 10));
         
-        // Limpiar línea 1 del score (opcional)
         LCD_Posicion(SCORE_COL, 1);
         DIGITO(' ');
         DIGITO(' ');
@@ -705,19 +724,16 @@ void actualizar_score_rapido(void) {
 }
 
 unsigned char random_number(unsigned char max) {
-    // Mejorar entropía usando múltiples fuentes
     semilla += TMR0;
-    semilla ^= (segundosJuego << 3);  // XOR con tiempo de juego
-    semilla += timerTicks;             // Sumar ticks
+    semilla ^= (segundosJuego << 3);
+    semilla += timerTicks;
     
-    // Algoritmo LCG mejorado
     semilla = (semilla * 73 + 47) & 0xFF;
     
     return semilla % max;
 }
 
 void calcular_proxima_separacion(void) {
-    // Generar separación aleatoria entre obstáculos
     unsigned char rango = separacion_maxima - separacion_minima + 1;
     proxima_generacion = separacion_minima + random_number(rango);
 }
@@ -728,31 +744,398 @@ unsigned char detectar_colision(void) {
 
 void evaluar_metas(void) {
     if(nivel.goalType == 1) {
-        // Meta: Esquivar N obstáculos
         if(telemetria.obstaclesEsquivados >= nivel.goalValue) {
             CLR_GAME_ACTIVE();
-            SET_FLAG(telemetria.flags, 0x01);  // Victoria
+            SET_FLAG(telemetria.flags, 0x01);
             mostrar_victoria();
             enviar_telemetria();
             CLR_GAME_INIT();
+            COMANDO(0x01);
+            __delay_ms(2);
             LCD_Posicion(0, 0);
             LCD_Escr_String("Esperando");
             LCD_Posicion(0, 1);
             LCD_Escr_String("config...");
         }
     } else {
-        // Meta: Sobrevivir N segundos
         if(telemetria.tiempoTranscurrido >= nivel.goalValue) {
             CLR_GAME_ACTIVE();
-            SET_FLAG(telemetria.flags, 0x01);  // Victoria
+            SET_FLAG(telemetria.flags, 0x01);
             mostrar_victoria();
             enviar_telemetria();
             CLR_GAME_INIT();
+            COMANDO(0x01);
+            __delay_ms(2);
             LCD_Posicion(0, 0);
             LCD_Escr_String("Esperando");
             LCD_Posicion(0, 1);
             LCD_Escr_String("config...");
         }
+    }
+}
+
+// ============ FUNCIONES DE MÚSICA ============
+void PARPADEO(void) {
+    LED = 1;
+    __delay_ms(500);
+    LED = 0;
+    __delay_ms(500);
+}
+
+void iniciar(void)
+{
+       MI_OCT_5();
+            MI_OCT_5();
+            __delay_ms(100);
+            MI_OCT_5();
+            MI_OCT_5();
+            __delay_ms(200);
+            MI_OCT_5();
+            MI_OCT_5();
+            __delay_ms(200);
+            DO_OCT_5();
+            DO_OCT_5();
+            __delay_ms(100);
+            MI_OCT_5();
+            MI_OCT_5();
+            __delay_ms(200);
+            SOL_OCT_5();
+            SOL_OCT_5();
+            SOL_OCT_5();
+            SOL_OCT_5();
+            __delay_ms(400);
+            SOL_OCT_4();
+            SOL_OCT_4();
+            SOL_OCT_4();
+            SOL_OCT_4();
+            SOL_OCT_4();
+            SOL_OCT_4();
+            __delay_ms(100);
+}
+
+void death(void)
+{
+    SOL_OCT_3();
+            SOL_OCT_4();
+            SI_OCT_4();
+            __delay_ms(100);
+            RE_OCT_5();
+            FA_OCT_5();
+            __delay_ms(200);
+            SOL_OCT_3();
+            RE_OCT_5();
+            FA_OCT_5();
+            __delay_ms(100);
+            SOL_OCT_3();
+            RE_OCT_5();
+            FA_OCT_5();
+            __delay_ms(100);
+            LA_OCT_3();
+            DO_OCT_5();
+            MI_OCT_5();
+            __delay_ms(100);
+            SI_OCT_3();
+            SI_OCT_4();
+            RE_OCT_5();
+            __delay_ms(100);
+            DO_OCT_4();
+            SOL_OCT_4();
+            DO_OCT_5();
+            __delay_ms(100);
+            MI_OCT_4();
+            __delay_ms(100);
+            SOL_OCT_3();
+            __delay_ms(100);
+            MI_OCT_4();
+            __delay_ms(100);
+            DO_OCT_3();
+            DO_OCT_4();
+}
+
+void victoria(void)
+{
+    __delay_ms(1000);
+            FA_OCT_3();
+            __delay_ms(0.1);
+            LA_OCT_4();
+            __delay_ms(0.1);
+            DO_OCT_5();
+            __delay_ms(100);
+            SI_OCT_4();
+            RE_OCT_5();
+            __delay_ms(100);
+            DO_OCT_5();
+            MI_OCT_5();
+            __delay_ms(100);
+            FA_OCT_3();
+            __delay_ms(0.1);
+            RE_OCT_5();
+            __delay_ms(0.1);
+            FA_OCT_5();
+            FA_OCT_5();
+            FA_OCT_5();
+            FA_OCT_5();
+            FA_OCT_5();
+            FA_OCT_5();
+            FA_OCT_5();
+            __delay_ms(100);
+            FA_OCT_3();
+            __delay_ms(0.1);
+            MI_OCT_5();
+            __delay_ms(0.1);
+            SOL_OCT_5();
+            __delay_ms(100);
+            SOL_OCT_3();
+            __delay_ms(0.1);
+            FA_OCT_5();
+            __delay_ms(0.1);
+            LA_OCT_5();
+            __delay_ms(100);
+            SOL_OCT_3();
+            __delay_ms(0.1);
+            SOL_OCT_5();
+            __delay_ms(0.1);
+            SI_OCT_5();
+            __delay_ms(100);
+            DO_OCT_3();
+            __delay_ms(0.1);
+            LA_OCT_5();
+            __delay_ms(0.1);
+            DO_OCT_6();
+            __delay_ms(400);
+            DO_OCT_3();
+            __delay_ms(0.1);
+            MI_OCT_4();
+            __delay_ms(0.1);
+            DO_OCT_5();
+            __delay_ms(100);
+}
+
+// ============ NOTAS MUSICALES ============
+void MI_OCT_5(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(379.21);
+        BOCINA = 0;
+        __delay_us(379.21);
+    }
+}
+
+void DO_OCT_5(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(477.78);
+        BOCINA = 0;
+        __delay_us(477.78);
+    }
+}
+
+void SOL_OCT_5(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(318.88);
+        BOCINA = 0;
+        __delay_us(318.88);
+    }
+}
+
+void SOL_OCT_4(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(637.76);
+        BOCINA = 0;
+        __delay_us(637.76);
+    }
+}
+
+void LA_OCT_4(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(568.18);
+        BOCINA = 0;
+        __delay_us(568.18);
+    }
+}
+
+void FA_OCT_5(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(357.93);
+        BOCINA = 0;
+        __delay_us(357.93);
+    }
+}
+
+void FA_OCT_2(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(2863.45);
+        BOCINA = 0;
+        __delay_us(2863.45);
+    }
+}
+
+void SOL_OCT_2(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(2551.05);
+        BOCINA = 0;
+        __delay_us(2551.05);
+    }
+}
+
+void LA_OCT_2(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(2272.72);
+        BOCINA = 0;
+        __delay_us(2272.72);
+    }
+}
+
+void LAS_OCT_2(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(2145.16);
+        BOCINA = 0;
+        __delay_us(2145.16);
+    }
+}
+
+void DO_OCT_3(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(1911.12);
+        BOCINA = 0;
+        __delay_us(1911.12);
+    }
+}
+
+void RE_OCT_3(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(1702.62);
+        BOCINA = 0;
+        __delay_us(1702.62);
+    }
+}
+
+void MI_OCT_3(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(1516.86);
+        BOCINA = 0;
+        __delay_us(1516.86);
+    }
+}
+
+void FA_OCT_3(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(1431.72);
+        BOCINA = 0;
+        __delay_us(1431.72);
+    }
+}
+
+void SOL_OCT_3(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(1275.52);
+        BOCINA = 0;
+        __delay_us(1275.52);
+    }
+}
+
+void SI_OCT_3(void)
+{
+    for(int i = 0; i < 32; i++)
+    {
+        BOCINA = 1;
+        __delay_us(1012.38);
+        BOCINA = 0;
+        __delay_us(1012.38);
+    }
+}
+
+void SI_OCT_4(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(506.19);
+        BOCINA = 0;
+        __delay_us(506.19);
+    }
+}
+
+void RE_OCT_5(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(425.65);
+        BOCINA = 0;
+        __delay_us(425.65);
+    }
+}
+
+void LA_OCT_3(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(1136.36);
+        BOCINA = 0;
+        __delay_us(1136.36);
+    }
+}
+
+void DO_OCT_4(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(955.56);
+        BOCINA = 0;
+        __delay_us(955.56);
+    }
+}
+
+void MI_OCT_4(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(758.43);
+        BOCINA = 0;
+        __delay_us(758.43);
+    }
+}
+
+void LA_OCT_5(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(284.09);
+        BOCINA = 0;
+        __delay_us(284.09);
+    }
+}
+
+void SI_OCT_5(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(253.09);
+        BOCINA = 0;
+        __delay_us(253.09);
+    }
+}
+
+void DO_OCT_6(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(238.89);
+        BOCINA = 0;
+        __delay_us(238.89);
+    }
+}
+
+void RE_OCT_6(void) {
+    for(int i = 0; i < 32; i++) {
+        BOCINA = 1;
+        __delay_us(212.48);
+        BOCINA = 0;
+        __delay_us(212.48);
     }
 }
 
@@ -762,7 +1145,9 @@ void main(void) {
     TRISB = 0x00;
     TRISC = 0x00;
     TRISD = 0x03;
-    PORTB = PORTC = PORTD = 0x00;
+    TRISA = 0x00;  // RA0 como salida para LED
+    TRISEbits.TRISE2 = 0;  // RE2 como salida para BOCINA
+    PORTB = PORTC = PORTD = PORTA = PORTE = 0x00;
     
     OPTION_REGbits.T0CS = 1;
     OPTION_REGbits.PSA = 0;
@@ -779,9 +1164,11 @@ void main(void) {
     semilla = TMR0;
     gameFlags = 0;
     
-    // *** ASEGURAR QUE LAS INTERRUPCIONES ESTÉN HABILITADAS ***
-    INTCONbits.PEIE = 1;  // Habilitar interrupciones periféricas
-    INTCONbits.GIE = 1;   // Habilitar interrupciones globales
+    INTCONbits.PEIE = 1;
+    INTCONbits.GIE = 1;
+    
+    COMANDO(0x01);
+    __delay_ms(2);
     
     LCD_Posicion(0, 0);
     LCD_Escr_String("Esperando");
@@ -803,35 +1190,29 @@ void main(void) {
         }
         
         // Loop del juego optimizado
-        if(IS_GAME_INIT() && IS_GAME_ACTIVE()) 
-        {
-            // 1. Verificar si hay obstáculo en columna 1 ANTES de desplazar
+        if(IS_GAME_INIT() && IS_GAME_ACTIVE()) {
             unsigned char obstaculo_en_col1 = 
                 (displayBuffer[0][1] == OBSTACULO || displayBuffer[1][1] == OBSTACULO);
 
-            // 2. Leer botones
             leer_botones_rapido();
 
-            // 3. *** NUEVO: Generar obstáculos con separación aleatoria ***
             Cont_Obstaculo++;
             if(Cont_Obstaculo >= proxima_generacion) {
                 Cont_Obstaculo = 0;
                 generar_obstaculo();
-                // proxima_generacion ya se actualiza dentro de generar_obstaculo()
             }
 
-            // 4. Desplazar el mundo
             desplazar_mundo_rapido();
 
-            // 5. CONTAR OBSTÁCULO ESQUIVADO Y VERIFICAR COLISIÓN
             if(obstaculo_en_col1) {
                 if(displayBuffer[Fila_Personaje][0] == OBSTACULO) {
-                    // COLISIÓN!
                     CLR_GAME_ACTIVE();
-                    CLR_FLAG(telemetria.flags, 0x01);  // resultado = derrota
+                    CLR_FLAG(telemetria.flags, 0x01);
                     mostrar_derrota();
                     enviar_telemetria();
                     CLR_GAME_INIT();
+                    COMANDO(0x01);
+                    __delay_ms(2);
                     LCD_Posicion(0, 0);
                     LCD_Escr_String("Esperando");
                     LCD_Posicion(0, 1);
@@ -839,26 +1220,17 @@ void main(void) {
                     continue;
                 }
                 else {
-                    // Obstáculo esquivado
                     puntuacion++;
                     telemetria.obstaclesEsquivados++;
                 }
             }
 
-            // 6. Evaluar metas continuamente
             evaluar_metas();
 
-            // 7. Si llegamos aquí, el juego sigue activo
             if(IS_GAME_ACTIVE()) {
-                // Redibujar personaje
                 displayBuffer[Fila_Personaje][0] = PERSONAJE;
-
-                // Actualizar pantalla
                 actualizar_pantalla_rapido();
-
-                // Actualizar score si cambió
                 actualizar_score_rapido();
-
                 __delay_ms(100);
             }
         }
