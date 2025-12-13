@@ -451,9 +451,11 @@ void inicializar_telemetria(void) {
 void enviar_telemetria(void) {
     unsigned char buffer[4], idx, temp;
     unsigned int val;
+    unsigned int tiempo_corregido;
     
     UART_Escr_String("{\"obstacles\":");
     
+    // Enviar obstáculos (sin corrección)
     val = telemetria.obstaclesEsquivados;
     idx = 0;
     if(val == 0) {
@@ -476,7 +478,18 @@ void enviar_telemetria(void) {
     
     UART_Escr_String(",\"time\":");
     
-    val = telemetria.tiempoTranscurrido;
+    // *** CORRECCIÃ"N: RESTAR 4 SEGUNDOS AL TIEMPO ***
+    tiempo_corregido = telemetria.tiempoTranscurrido;
+    
+    // Protección: no enviar valores negativos
+    if(tiempo_corregido >= 4) {
+        tiempo_corregido -= 4;
+    } else {
+        tiempo_corregido = 1;  // Si es menor a 4s, enviar 1
+    }
+    
+    // Convertir tiempo corregido a string
+    val = tiempo_corregido;
     idx = 0;
     if(val == 0) {
         buffer[idx++] = '0';
